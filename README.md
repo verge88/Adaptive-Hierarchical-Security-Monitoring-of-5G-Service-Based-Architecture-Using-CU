@@ -39,3 +39,13 @@ This simulation deliberately assumes that attacked NFs leave observable anomalie
 - 3GPP TS 23.501 (5G architecture), TS 29.500 (SBI services) and TS 29.510 (NRF NF management).
 - 3GPP TS 23.288 (Network Data Analytics Function architecture).
 - Uploaded dissertation source: concept of zone leaders/followers, CU report + nonce + authentication code, temporal/spatial features, and cascaded/anomaly detection. This repository tests a **new adaptive sampling hypothesis**, not a full replication of the original SS7/Diameter/SIP evaluation.
+
+## Stage 2: Open5GS-native NRF + HTTP/2 control overlay (separate experimental PR)
+
+The `live/` directory introduces an isolated **real Open5GS NRF, AUSF and NSSF**
+Docker Compose configuration, native 5G NRF discovery over HTTP/2 and a separate
+HTTP/2 research overlay for authenticated CU and independently instrumented
+SCP-like counters. See [live/README.md](live/README.md). Native Open5GS NFs are
+**not** modified to accept CU; results are accelerated logical-time tests, not
+measured real-life 5G detection latency. This stage is not a replacement for
+field traffic validation.
