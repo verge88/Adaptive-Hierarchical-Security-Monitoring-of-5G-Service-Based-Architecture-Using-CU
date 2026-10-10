@@ -1,0 +1,76 @@
+name: Stage 3 Open5GS security trial (24 paired seeds)
+
+on:
+  push:
+    branches: [main, 'experiment/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-trials:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run blinded test suite
+        run: |
+          python -m compileall -q research stage3_tests
+          python -m unittest discover -s stage3_tests -v
+      - name: Start actual Open5GS NRF/AUSF/NSSF
+        run: docker compose -f live/compose.yaml up -d --pull always
+      - name: Require real NRF discovery over HTTP2
+        run: python -m research.nrf_probe --retries 45
+      - name: Run attack families, CU baselines and zonal ablation
+        run: python -m research.stage3_experiment --start-seed $((801 + 6 * ${{ matrix.shard }})) --count 6 --output stage3_shard
+      - name: Capture native Open5GS diagnostics
+        if: always()
+        run: |
+          mkdir -p stage3_diagnostics
+          docker compose -f live/compose.yaml ps -a > stage3_diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml logs --no-color > stage3_diagnostics/open5gs.log 2>&1 || true
+      - name: Upload seed-level observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage3-shard-${{ matrix.shard }}
+          path: |
+            stage3_shard/
+            stage3_diagnostics/
+          retention-days: 30
+      - name: Stop native Open5GS
+        if: always()
+        run: docker compose -f live/compose.yaml down --remove-orphans || true
+
+  aggregate:
+    needs: live-trials
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all 4 seeds shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage3-shard-*
+          path: stage3_batches
+      - name: Install HTTP2 imports used by shared experiment module
+        run: python -m pip install -r live/requirements.txt
+      - name: Scientific results, baseline comparison and uncertainty
+        run: python -m research.stage3_report --input stage3_batches --output stage3_aggregate
+      - name: Publish report on run summary
+        run: cat stage3_aggregate/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage3-final-24-seed-results
+          path: stage3_aggregate/
+          retention-days: 90
