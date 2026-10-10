@@ -124,8 +124,7 @@ async def execute(args):
         verified_calibration_posterior=model.snapshot(),
         chosen_heldout_guard_policy=(
             "risk_hierarchical" if payloads["heldout"]["guard_risk"]
-            else "safe_fixed_fallback")
-    ,indent=2))
+            else "safe_fixed_fallback")),indent=2))
     print(f"STAGE13 DONE seed={args.seed} calibration={CAL_EVENTS} "
           f"HELDOUT={EVAL_EVENTS}; frozen_guard={model.choose_risk()}",
           flush=True)
