@@ -1,0 +1,38 @@
+name: 5G SBA risk-adaptive CU experiment
+
+on:
+  push:
+    branches: [main, 'experiment/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-experiment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research tests
+      - name: Run correctness and fairness tests
+        run: python -m unittest discover -s tests -v
+      - name: Run preregistered multi-seed experiment
+        run: python -m research.experiment --seeds 12 --output results
+      - name: Publish experiment summary in job
+        run: cat results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw results and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-5g-sba-cu-experiment
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
