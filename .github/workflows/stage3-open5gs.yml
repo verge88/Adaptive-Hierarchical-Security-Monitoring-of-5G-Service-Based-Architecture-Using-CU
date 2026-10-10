@@ -63,6 +63,8 @@ jobs:
         with:
           pattern: stage3-shard-*
           path: stage3_batches
+      - name: Install HTTP2 imports used by shared experiment module
+        run: python -m pip install -r live/requirements.txt
       - name: Scientific results, baseline comparison and uncertainty
         run: python -m research.stage3_report --input stage3_batches --output stage3_aggregate
       - name: Publish report on run summary
