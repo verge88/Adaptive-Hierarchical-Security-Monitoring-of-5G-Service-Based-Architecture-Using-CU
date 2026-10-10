@@ -1,0 +1,79 @@
+name: Stage 12 large-N 576 laboratory SCP attacks with real Open5GS
+on:
+  push:
+    branches: ['experiment/stage12-large-sample-576']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  large-sample:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real HTTP2 framing dependencies
+        run: python -m pip install -r live/requirements.txt
+      - name: Pre-register factorial, ensure no scheduler edits and validate genuine HTTP2
+        run: |
+          python -m compileall -q research stage11_tests stage12_tests
+          python -m unittest discover -s stage11_tests -v
+          python -m unittest discover -s stage12_tests -v
+      - name: Validate disposable real Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start genuine Open5GS NRF and native NSSF pair
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Require actual NRF registration before any injected proxy attack
+        run: python -m research.nrf_probe --retries 45
+      - name: Run 48 real HTTP2 lab-SCP attack episodes, preserve original phase timeline
+        run: python -m research.stage12_scale --seed $((3601 + ${{ matrix.shard }})) --output stage12_shard --checkpoint-every 8
+      - name: Collect unmodified real Open5GS diagnostic logs
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload raw 48 attacks, transaction IDs and actual core diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage12-shard-${{ matrix.shard }}
+          path: |
+            stage12_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable actual Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  scientific-analysis:
+    needs: large-sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared HTTP2 dependency
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage12-shard-*
+          path: stage12_batches
+      - name: Verify all 576 attacks, budgets, controls, and runner-cluster effects
+        run: python -m research.stage12_report --input stage12_batches --output stage12_report
+      - name: Publish exact statistical interpretation
+        run: cat stage12_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Store full original JSON, machine-readable result and scientific report
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage12-576-attacks-scientific-results
+          path: stage12_report/
+          retention-days: 90
