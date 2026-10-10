@@ -54,6 +54,21 @@ def query(nf,rare=False):
                 sd="0000FF" if rare else "000001")
 
 
+def observation_phase(sent_ns,completed_ns,start_ns,end_ns):
+    """Only fully pre-/post-fault operations are CLEAN.
+
+    Any request crossing the fault injection or recovery boundary is
+    TRANSITION and is excluded from both clean-FPR and attack recall.
+    """
+    if start_ns is None or completed_ns < start_ns:
+        return "clean"
+    if end_ns is not None and sent_ns > end_ns:
+        return "clean"
+    if sent_ns > start_ns and (end_ns is None or completed_ns < end_ns):
+        return "attack"
+    return "transition"
+
+
 class LabSliceService:
     """Instrumented research service, not a real NSSF/Nnssf handler."""
     def __init__(self,seed,stressed_zone):
@@ -200,37 +215,43 @@ async def episode(seed,number,mode,alignment,instance,stressed_zone,nrf_url):
         zone_scores=[0.]*N
         for tick in range(TICKS):
             await asyncio.sleep(max(0.,origin+tick*TICK_S-time.monotonic()))
-            attacked=(fault_start is not None and fault_end is None)
-            clean=(fault_start is None or fault_end is not None)
+            # Evaluate each request's COMPLETE temporal interval, rather
+            # than a single per-tick label that can cross fault onset.
             # Real passive traffic: strong semantic validator gets every
             # observed legitimate transaction, including rare ones if sampled.
             for nf in range(N):
                 rare=random_traffic.random()<RARE_P[mode]
                 q=query(nf,rare)
+                sent_ns=time.monotonic_ns()
                 status,answer,nbytes,_=await h2_request(
                     service_url,"/research/nnssf/select","POST",q,timeout=3)
+                finished_ns=time.monotonic_ns()
+                phase=observation_phase(sent_ns,finished_ns,fault_start,fault_end)
                 if status!=200:
                     raise AssertionError("Lab NSSF request failed")
                 bad=answer["decision"]!=expected_decision(q)
-                if attacked and nf==instance and rare:
+                if phase=="attack" and nf==instance and rare:
                     label_count+=1
                 r=results["passive_semantic"]
                 r["checked"]+=1 # visible passive messages, not active probes
-                if attacked and bad and r["detected"] is None:
-                    r["detected"]=time.monotonic_ns()
-                if clean:
+                if phase=="attack" and bad and r["detected"] is None:
+                    r["detected"]=finished_ns
+                if phase=="clean":
                     r["clean"]+=1
                     r["false"]+=int(bad)
                 # Data-mining input ONLY: benign load conditions, no fault label.
                 zone_scores[nf]=.65*zone_scores[nf]+.35*float(answer["observed_load"])
             # NRF-only checks REAL instance IDs, never receives fault labels.
+            nrf_sent_ns=time.monotonic_ns()
             post=await nrf_instance_sets(nrf_url)
+            nrf_finished_ns=time.monotonic_ns()
+            nrf_phase=observation_phase(nrf_sent_ns,nrf_finished_ns,fault_start,fault_end)
             drift=post!=pre
             rr=results["nrf_ids"]
             rr["checked"]+=1
-            if attacked and drift and rr["detected"] is None:
-                rr["detected"]=time.monotonic_ns()
-            if clean:
+            if nrf_phase=="attack" and drift and rr["detected"] is None:
+                rr["detected"]=nrf_finished_ns
+            if nrf_phase=="clean":
                 rr["clean"]+=1
                 rr["false"]+=int(drift)
             # Both local and hierarchical algorithms use the same observations.
@@ -248,7 +269,10 @@ async def episode(seed,number,mode,alignment,instance,stressed_zone,nrf_url):
                     raise AssertionError("Unequal active budget")
                 for nf in chosen:
                     r["seq"]+=1
+                    sent_ns=time.monotonic_ns()
                     answer,wire=await active_request(service_url,agent,policy,nf,r["seq"])
+                    finished_ns=time.monotonic_ns()
+                    phase=observation_phase(sent_ns,finished_ns,fault_start,fault_end)
                     r["bytes"]+=wire
                     r["checked"]+=1
                     previous=r["last"][nf]
@@ -256,9 +280,9 @@ async def episode(seed,number,mode,alignment,instance,stressed_zone,nrf_url):
                     r["last"][nf]=tick
                     # Oracle known to every detector; not the attack label.
                     bad=answer["decision"]!=expected_decision(query(nf,True))
-                    if attacked and bad and r["detected"] is None:
-                        r["detected"]=time.monotonic_ns()
-                    if clean:
+                    if phase=="attack" and bad and r["detected"] is None:
+                        r["detected"]=finished_ns
+                    if phase=="clean":
                         r["clean"]+=1
                         r["false"]+=int(bad)
             trace.append(dict(tick=tick,real_NRF_registry_unchanged=not drift,
