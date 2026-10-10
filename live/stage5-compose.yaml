@@ -1,0 +1,27 @@
+# Stage 5: genuinely running native Open5GS NFs, no CU code in their binaries.
+# Ports are restricted to GitHub runner loopback; lab-only no TLS.
+services:
+  ausf:
+    ports:
+      - "127.0.0.1:7788:80"
+  nssf:
+    ports:
+      - "127.0.0.1:7789:80"
+  ausf2:
+    image: ghcr.io/borjis131/ausf:v2.7.6
+    command: ["-c", "/etc/open5gs/lab/ausf2.yaml"]
+    volumes:
+      - ./ausf2.yaml:/etc/open5gs/lab/ausf2.yaml:ro
+    ports:
+      - "127.0.0.1:7790:80"
+    depends_on: [nrf]
+    networks: [sbi]
+  nssf2:
+    image: ghcr.io/borjis131/nssf:v2.7.6
+    command: ["-c", "/etc/open5gs/lab/nssf2.yaml"]
+    volumes:
+      - ./nssf2.yaml:/etc/open5gs/lab/nssf2.yaml:ro
+    ports:
+      - "127.0.0.1:7791:80"
+    depends_on: [nrf]
+    networks: [sbi]
