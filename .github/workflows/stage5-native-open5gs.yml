@@ -31,7 +31,7 @@ jobs:
       - name: Native NRF HTTP/2 discovery readiness
         run: python -m research.nrf_probe --retries 45
       - name: Actual native NF stop/restart and authenticated CU monitoring
-        run: python -m research.stage5_native --seed ${{ 1601 + matrix.shard }} --output stage5_shard
+        run: python -m research.stage5_native --seed $((1601 + ${{ matrix.shard }})) --output stage5_shard
       - name: Collect container logs
         if: always()
         run: |
