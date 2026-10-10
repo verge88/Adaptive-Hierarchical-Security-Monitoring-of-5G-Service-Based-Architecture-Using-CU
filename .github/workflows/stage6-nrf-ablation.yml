@@ -1,0 +1,75 @@
+name: Stage 6 NRF-only control and randomized native Open5GS outages
+on:
+  push:
+    branches: ['experiment/stage6-nrf-only-randomized-phase']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  faults:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 dependencies
+        run: python -m pip install -r live/requirements.txt
+      - name: Syntax and blinded scheduling controls
+        run: |
+          python -m compileall -q research stage6_tests
+          python -m unittest discover -s stage6_tests -v
+      - name: Validate native NF Docker topology
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start native NRF AUSF x2 NSSF x2
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Check live NRF HTTP2 registration/discovery
+        run: python -m research.nrf_probe --retries 45
+      - name: Randomized-phase real NF outages and NRF-only ablation
+        run: python -m research.stage6_native --seed $((1801 + ${{ matrix.shard }})) --output stage6_shard
+      - name: Capture Open5GS diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload original native NF and NRF event evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage6-shard-${{ matrix.shard }}
+          path: |
+            stage6_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop isolated core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  aggregate:
+    needs: faults
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 imports for research package
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage6-shard-*
+          path: stage6_batches
+      - name: Evaluate NRF-only control and paired live vs masked interaction
+        run: python -m research.stage6_report --input stage6_batches --output stage6_report
+      - name: Publish science report
+        run: cat stage6_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage6-nrf-ablation-native-report
+          path: stage6_report/
+          retention-days: 90
