@@ -1,0 +1,79 @@
+name: Stage 4 bounded risk-adaptive CU Open5GS (36 matched seeds)
+
+on:
+  push:
+    branches: [main, 'experiment/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage4:
+    name: Bounded CU shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python HTTP2 support
+        run: python -m pip install -r live/requirements.txt
+      - name: Check syntax and hard-deadline properties
+        run: |
+          python -m compileall -q research stage4_tests
+          python -m unittest discover -s stage4_tests -v
+      - name: Run real Open5GS NRF/AUSF/NSSF containers
+        run: docker compose -f live/compose.yaml up -d --pull always
+      - name: Verify 5G NRF service discovery over actual HTTP2 frames
+        run: python -m research.nrf_probe --retries 45
+      - name: Run 6 paired schedules (including bounded-local zonal ablation)
+        run: python -m research.stage4_experiment --start-seed $((1201 + 6 * ${{ matrix.shard }})) --count 6 --output stage4_shard
+      - name: Capture real Open5GS diagnostics
+        if: always()
+        run: |
+          mkdir -p stage4_diagnostics
+          docker compose -f live/compose.yaml ps -a > stage4_diagnostics/status.txt || true
+          docker compose -f live/compose.yaml logs --no-color > stage4_diagnostics/open5gs.log 2>&1 || true
+      - name: Upload raw results from this seed shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage4-shard-${{ matrix.shard }}
+          path: |
+            stage4_shard/
+            stage4_diagnostics/
+          retention-days: 30
+      - name: Shutdown Open5GS
+        if: always()
+        run: docker compose -f live/compose.yaml down --remove-orphans || true
+
+  report:
+    needs: stage4
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 dependency for imported common experiment module
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage4-shard-*
+          path: stage4_batches
+      - name: Pre-registered paired bootstrap and exact CU-budget audit
+        run: python -m research.stage4_report --input stage4_batches --output stage4_aggregate
+      - name: Add findings to GitHub Actions summary
+        run: cat stage4_aggregate/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage4-bounded-cu-research-report
+          path: stage4_aggregate/
+          retention-days: 90
