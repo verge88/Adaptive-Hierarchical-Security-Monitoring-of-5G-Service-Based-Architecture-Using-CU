@@ -1,0 +1,11 @@
+name: Stage 5 native Open5GS validation
+on:
+  push:
+    branches: ['experiment/stage5-native-nf-faults']
+  workflow_dispatch:
+jobs:
+  verification:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m compileall -q research stage5_tests
