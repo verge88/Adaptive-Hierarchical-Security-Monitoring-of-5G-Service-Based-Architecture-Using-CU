@@ -182,7 +182,7 @@ async def episode(seed,number,kind,attack,nrf_url):
     await gateway.server.start()
     await attestor.server.start()
     g_url=f"http://127.0.0.1:{gateway.server.port}"
-    results={m:dict(alarm=None,clean=0,false=0,checks=0,bytes=0,gap=0) for m in METHODS}
+    results={m:dict(alarm=None,clean=0,false=0,prior_false=False,checks=0,bytes=0,gap=0) for m in METHODS}
     last={m:[-1]*len(NFS) for m in ACTIVES}
     local={m:[0.]*len(NFS) for m in ACTIVES}
     cycles={m:0 for m in ACTIVES}
@@ -235,11 +235,16 @@ async def episode(seed,number,kind,attack,nrf_url):
             }
             for method,flag in flags.items():
                 r=results[method]
-                if active_now and flag and r["alarm"] is None:
-                    r["alarm"]=time.monotonic_ns()
+                # Pre-onset alerts invalidate a clean first-detection
+                # claim for this same event; bytewise ordering noise should
+                # not be credited as a new true positive.
                 if clean_now:
                     r["clean"]+=1
                     r["false"]+=int(flag)
+                    if start_ns is None and flag:
+                        r["prior_false"]=True
+                if active_now and flag and r["alarm"] is None and not r["prior_false"]:
+                    r["alarm"]=time.monotonic_ns()
             # Risk features are metadata/status deviations + latency proxy.
             metadata={k:int(canonical(obs[k])!=baseline_semantics[k]) for k in KINDS}
             for method in ACTIVES:
@@ -293,6 +298,7 @@ async def episode(seed,number,kind,attack,nrf_url):
             method=name,detected=yes,delay_wall_s=dl,
             horizon_penalized_s=dl if yes else (end_ns-start_ns)/1e9,
             false_alerts=r["false"],clean_checks=r["clean"],
+            false_alert_before_attack=r["prior_false"],
             cu_checks=r["checks"],cu_bytes=r["bytes"],
             max_gap_ticks=r["gap"] if name in ACTIVES else None,
             real_nrf_id_sets_unchanged=True))
