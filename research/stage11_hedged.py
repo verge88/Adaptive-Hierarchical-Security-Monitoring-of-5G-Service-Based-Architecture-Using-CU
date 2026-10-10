@@ -39,7 +39,7 @@ ALIGNMENTS=("aligned","misleading","neutral","switch")
 METHODS=("nrf_only","passive_consumer","ordinary_active",
          "trusted_plain","cu_fixed","cu_local","cu_hier","cu_hedged","trusted_both_ends")
 BUDGETED=("ordinary_active","trusted_plain","cu_fixed","cu_local","cu_hier","cu_hedged")
-SCHEDULED=("trusted_plain","cu_fixed","cu_local","cu_hier")
+SCHEDULED=("trusted_plain","cu_fixed","cu_local","cu_hier","cu_hedged")
 
 
 def sha(obj):
@@ -379,7 +379,7 @@ async def episode(seed,episode_id,attack,alignment,target_context,stress_zone,nr
         for method in SCHEDULED:
             r=result[method]
             r["maxgap"]=max(r["maxgap"],max(TICKS-1-n for n in r["last"]))
-            if method in ("cu_local","cu_hier") and r["maxgap"]>MAX_GAP:
+            if method in ("cu_local","cu_hier","cu_hedged") and r["maxgap"]>MAX_GAP:
                 raise AssertionError("Hard max-check-gap violated")
 
     try:
