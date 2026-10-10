@@ -1,0 +1,75 @@
+name: Stage 8 dynamic native NRF HTTP2 vs semantic passive and CU
+on:
+  push:
+    branches: ['experiment/stage8-dynamic-nrf-semantic-baselines']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-nrf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 libraries
+        run: python -m pip install -r live/requirements.txt
+      - name: Verify semantics and HMAC CU under actual HTTP2 framing
+        run: |
+          python -m compileall -q research stage8_tests
+          python -m unittest discover -s stage8_tests -v
+      - name: Validate disposable Open5GS container topology
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start native 5G NRF AUSF x2 NSSF x2
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Verify native NRF discovery over HTTP2
+        run: python -m research.nrf_probe --retries 45
+      - name: Test native NRF discovery JSON against independent semantic baselines
+        run: python -m research.stage8_dynamic_nrf --seed $((2401 + ${{ matrix.shard }})) --output stage8_shard
+      - name: Collect real native Open5GS diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload original experiments and native NRF traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage8-shard-${{ matrix.shard }}
+          path: |
+            stage8_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable Open5GS
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  aggregate:
+    needs: native-nrf
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install research HTTP2 package
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage8-shard-*
+          path: stage8_batches
+      - name: Audit controls and write statistical results
+        run: python -m research.stage8_report --input stage8_batches --output stage8_report
+      - name: Show scientific report
+        run: cat stage8_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage8-dynamic-nrf-scientific-report
+          path: stage8_report/
+          retention-days: 90
