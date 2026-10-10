@@ -75,6 +75,7 @@ def analyze(root):
                 mean_cu_probes=statistics.mean(r["cu_checks"] for r in subset),
                 mean_cu_wire_bytes=statistics.mean(r["cu_http2_bytes"] for r in subset),
                 false_alarms=sum(r["false_alarms"] for r in subset),
+                clean_checks=sum(r["clean_checks"] for r in subset),
                 classification_resolution=subset[0]["classification_resolution"])
 
     # Use the RUNNER as independent unit (8 real faults are correlated within runner).
@@ -124,14 +125,15 @@ def markdown(s):
            "All times below measured with a real monotonic wall clock.",
            "", "## Detection by feed and policy","",
            "| NRF feed | Detector | Recall | Mean censored detection wall s | "
-           "Worst CU gap (ticks) | CU checks / event | Alarm resolution |",
-           "|---|---|---:|---:|---:|---:|---|"]
+           "Worst CU gap (ticks) | CU checks / event | Clean false alerts / checks | Alarm resolution |",
+           "|---|---|---:|---:|---:|---:|---:|---|"]
     for mode in MODES:
         for name in ("fixed","bounded_local","bounded_zone","nrf_only_live","nrf_only_masked"):
             x=s["policies"][mode][name]
+            x_fp=(f"{x['false_alarms']}/{x['clean_checks']}" if x["clean_checks"] else "not assessed")
             lines.append(f"| {mode} | {name} | {x['recall']:.3f} | "
                          f"{x['mean_censored_wall_s']:.3f} | {x['worst_cu_gap_ticks']} | "
-                         f"{x['mean_cu_probes']:.0f} | {x['classification_resolution']} |")
+                         f"{x['mean_cu_probes']:.0f} | {x_fp} | {x['classification_resolution']} |")
     lines+=["", "## Pre-registered spatial-feature ablation",""]
     for mode,x in s["zone_feature_ablation"].items():
         lo,hi=x["paired_cluster_ci95_s"]
