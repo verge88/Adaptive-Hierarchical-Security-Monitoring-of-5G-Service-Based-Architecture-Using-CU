@@ -1,7 +1,7 @@
 name: Stage 11 adversarial-risk resilient lab-SCP CU sampling with genuine Open5GS availability
 on:
   push:
-    branches: ['experiment/stage11-scp-selective-origin-integrity']
+    branches: ['experiment/stage11-hedged-risk-scheduling']
   workflow_dispatch:
 permissions:
   contents: read
