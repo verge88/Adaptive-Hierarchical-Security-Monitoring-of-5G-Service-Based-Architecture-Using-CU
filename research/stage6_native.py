@@ -72,6 +72,7 @@ class Fault:
     def __init__(self,target):
         self.target=target
         self.started_ns=None
+        self.injection_started_ns=None
         self.ended_ns=None
         self.start_delay_s=None
         self.stop_completed_ns=None
@@ -132,7 +133,7 @@ async def run_episode(agent,seed,episode,target,mode,nrf_url):
                     inspected_ns>=fault.started_ns and
                     record["detected_ns"] is None):
                     record["detected_ns"]=inspected_ns
-                if (fault.started_ns is None or
+                if (fault.injection_started_ns is None or
                     fault.ended_ns is not None):
                     record["clean_checks"]+=1
                     if not report["reachable"]:
@@ -147,6 +148,7 @@ async def run_episode(agent,seed,episode,target,mode,nrf_url):
 
     async def inject():
         await asyncio.sleep(max(0,origin_wall+fault.start_delay_s-time.monotonic()))
+        fault.injection_started_ns=time.monotonic_ns()
         await docker("stop",NFS[target].service)
         fault.started_ns=time.monotonic_ns()
         fault.stop_completed_ns=fault.started_ns
@@ -220,7 +222,9 @@ async def run_episode(agent,seed,episode,target,mode,nrf_url):
             native_h2_probe_mean_wall_ms=None))
     return result,dict(seed=seed,episode=episode,mode=mode,
         faulted_native_nf=NFS[target].service,stop_completed_wall_s=stop_s,
-        restoration_completed_wall_s=end_s,nrf_observations=feed.trace,
+        restoration_completed_wall_s=end_s,
+        injection_started_wall_s=(fault.injection_started_ns-origin)/1e9,
+        nrf_observations=feed.trace,
         per_policy_http2_observation={p:x["trace"] for p,x in results.items()},
         nrf_probe_errors=feed.errors)
 
