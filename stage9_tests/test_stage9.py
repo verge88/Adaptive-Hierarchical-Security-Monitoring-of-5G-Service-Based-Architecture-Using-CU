@@ -4,7 +4,7 @@ import unittest
 from research.h2_wire import h2_request
 from research.stage9_conditional import (
     LabSliceService,SignedResearchAttestor,active_request,
-    expected_decision,query,select,ACTIVE,BUDGET,MAX_GAP,MODES,ALIGNMENTS,N)
+    expected_decision,query,select,observation_phase,ACTIVE,BUDGET,MAX_GAP,MODES,ALIGNMENTS,N)
 
 class OracleAndPolicy(unittest.TestCase):
     def test_common_and_rare_policy_are_consistent(self):
@@ -13,6 +13,16 @@ class OracleAndPolicy(unittest.TestCase):
         self.assertEqual(expected_decision(dict(nf=2,sst=3,sd="bad")),"DENY")
         self.assertEqual(MODES,("zero_rare","sparse_rare"))
         self.assertEqual(ALIGNMENTS,("aligned","unaligned"))
+    def test_temporal_boundary_exclusion_for_crossing_h2_requests(self):
+        # A real HTTP/2 exchange spans an interval, not an instantaneous tick.
+        self.assertEqual(observation_phase(10,90,100,200),"clean")
+        self.assertEqual(observation_phase(90,110,100,200),"transition")
+        self.assertEqual(observation_phase(101,150,100,200),"attack")
+        self.assertEqual(observation_phase(190,210,100,200),"transition")
+        self.assertEqual(observation_phase(201,220,100,200),"clean")
+        self.assertEqual(observation_phase(101,150,100,None),"attack")
+        self.assertEqual(observation_phase(10,20,None,None),"clean")
+
     def test_equal_budget_and_deadline_for_many_risks(self):
         for seed in range(120):
             rng=random.Random(seed)
