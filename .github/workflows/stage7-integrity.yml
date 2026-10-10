@@ -1,0 +1,75 @@
+name: Stage 7 native Open5GS-backed SBI gateway integrity and NRF-ID controls
+on:
+  push:
+    branches: ['experiment/stage7-nrf-instance-gateway-integrity']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install true HTTP2 client/server dependency
+        run: python -m pip install -r live/requirements.txt
+      - name: Authenticate research KIE and validate strong passive/NRF baselines
+        run: |
+          python -m compileall -q research stage7_tests
+          python -m unittest discover -s stage7_tests -v
+      - name: Validate actual Open5GS container graph
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start real NRF AUSF x2 NSSF x2
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Verify real NRF HTTP2 discovery
+        run: python -m research.nrf_probe --retries 45
+      - name: Run paired attacks on research gateway to native NF responses
+        run: python -m research.stage7_integrity --seed $((2001 + ${{ matrix.shard }})) --output stage7_shard
+      - name: Capture true Open5GS container diagnostic logs
+        if: always()
+        run: |
+          mkdir -p stage7_diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > stage7_diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > stage7_diagnostics/open5gs.log 2>&1 || true
+      - name: Upload 8 native-backed gateway cases and ID traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage7-shard-${{ matrix.shard }}
+          path: |
+            stage7_shard/
+            stage7_diagnostics/
+          retention-days: 30
+      - name: Stop disposable native Open5GS
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  analysis:
+    needs: integrity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared HTTP2 research dependencies
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage7-shard-*
+          path: stage7_batches
+      - name: Verify original NRF ID sets and paired policy/attack outcomes
+        run: python -m research.stage7_report --input stage7_batches --output stage7_report
+      - name: Publish evidence and strict model limitations
+        run: cat stage7_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage7-integrity-scientific-results
+          path: stage7_report/
+          retention-days: 90
