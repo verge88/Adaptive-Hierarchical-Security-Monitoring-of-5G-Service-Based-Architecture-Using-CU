@@ -1,11 +1,75 @@
-name: Stage 5 native Open5GS validation
+name: Stage 5 Open5GS native NF failure recovery
 on:
   push:
     branches: ['experiment/stage5-native-nf-faults']
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  verification:
+  native-faults:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP/2 dependencies
+        run: python -m pip install -r live/requirements.txt
+      - name: Syntax and attestation/scheduling tests
+        run: |
+          python -m compileall -q research stage5_tests
+          python -m unittest discover -s stage5_tests -v
+      - name: Validate Open5GS topology
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start native Open5GS (NRF, AUSF x2, NSSF x2)
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Native NRF HTTP/2 discovery readiness
+        run: python -m research.nrf_probe --retries 45
+      - name: Actual native NF stop/restart and authenticated CU monitoring
+        run: python -m research.stage5_native --seed ${{ 1601 + matrix.shard }} --output stage5_shard
+      - name: Collect container logs
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/compose-ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload raw native NF measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage5-shard-${{ matrix.shard }}
+          path: |
+            stage5_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable 5G core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  report:
+    needs: native-faults
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: python -m compileall -q research stage5_tests
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python imports
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage5-shard-*
+          path: stage5_batches
+      - name: Analyze real NF faults, equal probes and runner-cluster confidence intervals
+        run: python -m research.stage5_report --input stage5_batches --output stage5_aggregate
+      - name: Publish scientific caveats and results
+        run: cat stage5_aggregate/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage5-native-nf-wallclock-report
+          path: stage5_aggregate/
+          retention-days: 90
