@@ -1,0 +1,75 @@
+name: Stage 11 adversarial-risk resilient lab-SCP CU sampling with genuine Open5GS availability
+on:
+  push:
+    branches: ['experiment/stage11-hedged-risk-scheduling']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-core-lab-scp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install actual HTTP2 framing dependency
+        run: python -m pip install -r live/requirements.txt
+      - name: Verify producer HMAC receipts, SCP selective alteration, CU and fair schedulers
+        run: |
+          python -m compileall -q research stage11_tests
+          python -m unittest discover -s stage11_tests -v
+      - name: Validate actual native 5G core topology
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start real Open5GS NRF/NSSF availability environment
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Ensure native NRF discovery and registration
+        run: python -m research.nrf_probe --retries 45
+      - name: Test eight risk-perturbed dynamic LAB SCP response tampering cases
+        run: python -m research.stage11_hedged --seed $((3301 + ${{ matrix.shard }})) --output stage11_shard
+      - name: Collect real native Open5GS diagnostic logs
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload lab SCP attack evidence, actual NRF and CU records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage11-shard-${{ matrix.shard }}
+          path: |
+            stage11_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  scientific-report:
+    needs: native-core-lab-scp
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared research transport
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage11-shard-*
+          path: stage11_batches
+      - name: Verify balanced attacks and provenance; publish paired-cluster comparisons
+        run: python -m research.stage11_report --input stage11_batches --output stage11_report
+      - name: Write scientific summary with caveats
+        run: cat stage11_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage11-scp-producer-integrity-scientific-report
+          path: stage11_report/
+          retention-days: 90
