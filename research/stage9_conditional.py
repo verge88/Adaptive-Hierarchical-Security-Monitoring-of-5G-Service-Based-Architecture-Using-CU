@@ -182,6 +182,7 @@ async def episode(seed,number,mode,alignment,instance,stressed_zone,nrf_url):
     label_count=0
     trace=[]
     random_traffic=random.Random(seed*191+number*31)
+    probe_order_rng=random.Random(seed*5021+number*83+71)
 
     async def inject():
         nonlocal fault_start,fault_end
@@ -235,7 +236,12 @@ async def episode(seed,number,mode,alignment,instance,stressed_zone,nrf_url):
             # Both local and hierarchical algorithms use the same observations.
             # Hierarchy aggregates the 2 neighboring NF-context load signals.
             zone=[statistics.mean(zone_scores[(i//2)*2:(i//2)*2+2]) for i in range(N)]
-            for policy in ACTIVE:
+            # Randomized policy execution order prevents fixed first/last
+            # privilege in monotonic wall-clock detection times. Seed does not
+            # depend on hidden target, attack onset or outcome labels.
+            execution=list(ACTIVE)
+            probe_order_rng.shuffle(execution)
+            for policy in execution:
                 r=results[policy]
                 chosen=select(policy,tick,r["last"],zone_scores,zone)
                 if len(set(chosen))!=BUDGET:
