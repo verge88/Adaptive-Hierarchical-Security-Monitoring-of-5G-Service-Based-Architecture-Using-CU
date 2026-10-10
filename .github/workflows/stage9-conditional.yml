@@ -1,0 +1,75 @@
+name: Stage 9 rare conditional NSSF research policy with native Open5GS
+on:
+  push:
+    branches: ['experiment/stage9-conditional-nssf-active-semantic']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conditional-fault:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport libraries
+        run: python -m pip install -r live/requirements.txt
+      - name: Check scientific protocol modules and controlled conditional lab fault
+        run: |
+          python -m compileall -q research stage9_tests
+          python -m unittest discover -s stage9_tests -v
+      - name: Confirm actual Open5GS NRF and two native NSSF instances
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start real Open5GS NRF AUSF NSSF pair
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Require actual Open5GS NRF HTTP2 discovery
+        run: python -m research.nrf_probe --retries 45
+      - name: Run randomized hidden conditional fault against research NSSF-like service
+        run: python -m research.stage9_conditional --seed $((2901 + ${{ matrix.shard }})) --output stage9_shard
+      - name: Capture actual NRF and NSSF Docker diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload 8 matched laboratory conditional fault episodes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage9-shard-${{ matrix.shard }}
+          path: |
+            stage9_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop real disposable Open5GS
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  scientific-report:
+    needs: conditional-fault
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install research HTTP2 requirements for common imports
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage9-shard-*
+          path: stage9_batches
+      - name: Validate full matched design and compare all strong baselines
+        run: python -m research.stage9_report --input stage9_batches --output stage9_aggregate
+      - name: Display rigorous caveats and measured differences
+        run: cat stage9_aggregate/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage9-conditional-nssf-scientific-results
+          path: stage9_aggregate/
+          retention-days: 90
