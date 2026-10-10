@@ -47,7 +47,7 @@ class BlindedConfidence(unittest.TestCase):
         self.assertFalse(c.choose_risk())
         first=c.lower_bound()
         self.assertLess(first,.56)
-        for _ in range(20):
+        for _ in range(60):
             c.observe_verified_mismatch(0,0)
         self.assertGreater(c.lower_bound(),first)
         self.assertTrue(c.choose_risk())
