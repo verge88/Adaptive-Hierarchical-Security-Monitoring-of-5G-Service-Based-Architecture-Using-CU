@@ -1,0 +1,78 @@
+name: Stage 13 held-out risk-confidence CU versus fixed with real Open5GS
+on:
+  push:
+    branches: ['experiment/stage13-confidence-guard-heldout']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  calibrate-then-heldout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install actual HTTP2 transport dependencies
+        run: python -m pip install -r live/requirements.txt
+      - name: Preflight calibration integrity, safe fallback and new independent factorial
+        run: |
+          python -m compileall -q research stage11_tests stage12_tests stage13_tests
+          python -m unittest discover -s stage13_tests -v
+          python -m unittest discover -s stage11_tests -v
+      - name: Check native Open5GS NRF/NSSF topology
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml config -q
+      - name: Start disposable real Open5GS NRF and two native NSSF processes
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml up -d --pull always
+      - name: Require real native NRF registration
+        run: python -m research.nrf_probe --retries 45
+      - name: Run 16 trusted signed calibration episodes then frozen 24 heldout faults
+        run: python -m research.stage13_trial --seed $((4801 + ${{ matrix.shard }})) --output stage13_shard
+      - name: Collect native Open5GS health and instance logs
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml logs --no-color > diagnostics/open5gs.log 2>&1 || true
+      - name: Upload calibration and heldout raw authenticating evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage13-shard-${{ matrix.shard }}
+          path: |
+            stage13_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable real core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml down --remove-orphans || true
+  heldout-statistics:
+    needs: calibrate-then-heldout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared transport
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage13-shard-*
+          path: stage13_batches
+      - name: Strict 12-seed frozen heldout audit plus cluster statistics
+        run: python -m research.stage13_report --input stage13_batches --output stage13_scientific
+      - name: Show transparent success and failure metrics
+        run: cat stage13_scientific/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage13-independent-calibration-heldout-scientific-report
+          path: stage13_scientific/
+          retention-days: 90
