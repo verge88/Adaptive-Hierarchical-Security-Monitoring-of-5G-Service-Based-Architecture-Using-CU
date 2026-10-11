@@ -264,6 +264,11 @@ class WorldOOD:
 
                 # The compromised NF falsifies its report.  Positive direction
                 # over-reports, negative direction under-reports.
+                report_direction = (
+                    attack.direction
+                    if active and attack is not None
+                    else 1
+                )
                 reported = max(
                     1,
                     int(
@@ -271,7 +276,7 @@ class WorldOOD:
                             honest
                             * (
                                 1
-                                + attack.direction
+                                + report_direction
                                 * attack_fraction
                             )
                             + rng.gauss(0, 2.4)
