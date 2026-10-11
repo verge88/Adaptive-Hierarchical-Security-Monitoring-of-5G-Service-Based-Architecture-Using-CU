@@ -12,6 +12,7 @@ from research.stage19_develop import (
     evaluate_page_hinkley,
     evaluate_single,
     evaluate_sparse_scan,
+    evaluate_robust_sparse_scan,
 )
 from research.stage19_detector import (
     MultiScaleDirectionalConfig,
@@ -22,6 +23,8 @@ from research.stage19_detector import (
     SingleScaleDirectionalDetector,
     SparseEScanConfig,
     SparseEScanDetector,
+    RobustSparseEScanConfig,
+    RobustSparseEScanDetector,
 )
 from research.stage19_simulation import (
     ALL_KINDS,
@@ -140,6 +143,35 @@ class Stage19ReplayTests(unittest.TestCase):
                     for tick in alerts
                 )
             )
+        self.assertAlmostEqual(
+            fast["event_recall"],
+            sum(detected) / len(detected),
+        )
+
+    def test_robust_sparse_scan_fast_replay_matches_full_detector(self):
+        world = SparseIntegrityWorld(9006)
+        trace = build_trace(world)
+        config = RobustSparseEScanConfig(
+            windows=(8, 16, 32),
+            tail_gate_p=0.04,
+            magnitude_gate_z=4.0,
+            min_hits=2,
+            e_sum_threshold=2.2,
+        )
+        fast = evaluate_robust_sparse_scan(
+            world, trace, config
+        )
+        full = RobustSparseEScanDetector(
+            trace["calibration"], config
+        )
+        alerts = replay_full(world, full)
+        detected = [
+            any(
+                ep.start_tick <= tick < ep.end_tick
+                for tick in alerts
+            )
+            for ep in world.episodes
+        ]
         self.assertAlmostEqual(
             fast["event_recall"],
             sum(detected) / len(detected),
