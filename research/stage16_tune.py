@@ -161,19 +161,32 @@ def tune(start_seed=TUNE_START_SEED, n_seeds=TUNE_SEEDS):
             "false_alarms_per_1000_clean_checks"
         ] <= FALSE_ALARM_CEILING
     ]
-    pool = feasible if feasible else champion_candidates
-    output["baseline_champion"] = max(
-        pool,
-        key=lambda item: (
-            item["summary"]["primary_event_recall"],
-            -item["summary"][
-                "primary_horizon_penalized_delay_s"
-            ],
-            -item["summary"][
-                "false_alarms_per_1000_clean_checks"
-            ],
-        ),
-    )
+    if feasible:
+        output["baseline_champion"] = max(
+            feasible,
+            key=lambda item: (
+                item["summary"]["primary_event_recall"],
+                -item["summary"][
+                    "primary_horizon_penalized_delay_s"
+                ],
+                -item["summary"][
+                    "false_alarms_per_1000_clean_checks"
+                ],
+            ),
+        )
+    else:
+        output["baseline_champion"] = min(
+            champion_candidates,
+            key=lambda item: (
+                item["summary"][
+                    "false_alarms_per_1000_clean_checks"
+                ],
+                -item["summary"]["primary_event_recall"],
+                item["summary"][
+                    "primary_horizon_penalized_delay_s"
+                ],
+            ),
+        )
     return output
 
 
