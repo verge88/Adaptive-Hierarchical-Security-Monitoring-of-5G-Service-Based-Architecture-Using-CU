@@ -42,7 +42,8 @@ class H2TargetHeaderOnWire(unittest.IsolatedAsyncioTestCase):
     async def test_real_http2_target_apiroot_is_present(self):
         async def handle(headers,body):
             return 200,dict(target=headers.get("3gpp-sbi-target-apiroot"),
-                            path=headers.get(":path"))
+                            path=headers.get(":path"),
+                            requester=headers.get("user-agent"))
         server=H2Server(handle)
         await server.start()
         try:
@@ -54,6 +55,7 @@ class H2TargetHeaderOnWire(unittest.IsolatedAsyncioTestCase):
             doc=json.loads(response.body)
             self.assertEqual(doc["target"],"http://nrf:80")
             self.assertEqual(doc["path"],"/nnrf-disc/v1/nf-instances")
+            self.assertTrue(doc["requester"].startswith("AMF-"))
             self.assertGreater(response.h2_bytes,0)
         finally:
             await server.close()
