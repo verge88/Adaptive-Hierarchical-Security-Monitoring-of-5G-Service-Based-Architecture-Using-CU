@@ -312,3 +312,129 @@ SPARSE_CLUSTER_GRID = tuple(
     for gate in (0.04, 0.06)
     for update_gate in (0.04, 0.06, 0.10)
 )
+
+
+@dataclass(frozen=True)
+class WindowedQuorumDirectionalConfig:
+    """Stage-17 fast e-process plus finite-window same-direction quorum."""
+
+    window_ticks: int
+    required_hits: int
+    direction_gate_p: float
+    quorum_update_gate_p: float
+
+
+class WindowedQuorumDirectionalState:
+    """Detect sparse same-direction evidence without indefinite accumulation."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: WindowedQuorumDirectionalConfig,
+    ):
+        if not calibration:
+            raise ValueError("Calibration cannot be empty")
+        if config.required_hits < 2:
+            raise ValueError("Quorum needs at least two hits")
+        self.calibration = list(calibration)
+        self.config = config
+        self.fast_positive = 0.0
+        self.fast_negative = 0.0
+        self.positive_ages: list[int] = []
+        self.negative_ages: list[int] = []
+
+    def observe(self, value: float) -> dict:
+        p_positive = upper_tail_rank(
+            self.calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.calibration, value
+        )
+        log_e_positive = math.log(
+            max(1e-12, power_betting_mixture(p_positive))
+        )
+        log_e_negative = math.log(
+            max(1e-12, power_betting_mixture(p_negative))
+        )
+
+        self.fast_positive = max(
+            0.0,
+            0.90 * self.fast_positive
+            + log_e_positive
+            - 0.12,
+        )
+        self.fast_negative = max(
+            0.0,
+            0.90 * self.fast_negative
+            + log_e_negative
+            - 0.12,
+        )
+
+        self.positive_ages = [
+            age + 1
+            for age in self.positive_ages
+            if age + 1 < self.config.window_ticks
+        ]
+        self.negative_ages = [
+            age + 1
+            for age in self.negative_ages
+            if age + 1 < self.config.window_ticks
+        ]
+
+        if p_positive <= self.config.quorum_update_gate_p:
+            self.positive_ages.append(0)
+        if p_negative <= self.config.quorum_update_gate_p:
+            self.negative_ages.append(0)
+
+        positive_alert = (
+            p_positive <= self.config.direction_gate_p
+            and (
+                self.fast_positive >= 5.0
+                or len(self.positive_ages)
+                >= self.config.required_hits
+            )
+        )
+        negative_alert = (
+            p_negative <= self.config.direction_gate_p
+            and (
+                self.fast_negative >= 5.0
+                or len(self.negative_ages)
+                >= self.config.required_hits
+            )
+        )
+        alert = positive_alert or negative_alert
+
+        record = {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "fast_positive": self.fast_positive,
+            "fast_negative": self.fast_negative,
+            "positive_quorum_hits": len(self.positive_ages),
+            "negative_quorum_hits": len(self.negative_ages),
+            "positive_alert": positive_alert,
+            "negative_alert": negative_alert,
+            "alert": alert,
+        }
+
+        if alert:
+            self.fast_positive = 0.0
+            self.fast_negative = 0.0
+            self.positive_ages.clear()
+            self.negative_ages.clear()
+
+        return record
+
+
+WINDOWED_QUORUM_GRID = tuple(
+    WindowedQuorumDirectionalConfig(
+        window_ticks=window,
+        required_hits=hits,
+        direction_gate_p=gate,
+        quorum_update_gate_p=update_gate,
+    )
+    for window in (8, 12, 16, 20)
+    for hits in (2, 3, 4, 5)
+    for gate in (0.04, 0.06)
+    for update_gate in (0.04, 0.06)
+    if hits <= window
+)
