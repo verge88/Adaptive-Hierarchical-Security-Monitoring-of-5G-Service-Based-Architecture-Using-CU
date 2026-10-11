@@ -25,6 +25,10 @@ from research.stage16_simulation import (
     WorldOOD,
     fixed_schedule,
 )
+from research.stage16_tune import (
+    build_trace,
+    evaluate_trace,
+)
 
 
 class Stage16WorldTests(unittest.TestCase):
@@ -122,6 +126,59 @@ class Stage16DetectorTests(unittest.TestCase):
         self.assertEqual(
             probes, [probes[0]] * len(probes)
         )
+
+    def test_fast_tuning_replay_matches_full_detectors(self):
+        world = WorldOOD(5004)
+        trace = build_trace(world)
+        cases = (
+            (
+                "ewma",
+                EWMAConfig(
+                    alpha=0.35,
+                    threshold=3.0,
+                    integrity_gate_p=0.06,
+                ),
+            ),
+            (
+                "page_hinkley",
+                PageHinkleyConfig(
+                    delta=0.3,
+                    threshold=7.0,
+                    integrity_gate_p=0.06,
+                    mean_alpha=0.07,
+                ),
+            ),
+        )
+        for name, config in cases:
+            full = evaluate_detector(
+                world,
+                detector_from_config(
+                    name, world, config.__dict__
+                ),
+            )
+            fast = evaluate_trace(
+                world, trace, name, config
+            )
+            self.assertAlmostEqual(
+                full["primary_event_recall"],
+                fast["primary_event_recall"],
+            )
+            self.assertAlmostEqual(
+                full["primary_horizon_penalized_delay_s"],
+                fast["primary_horizon_penalized_delay_s"],
+            )
+            self.assertAlmostEqual(
+                full["primary_normalized_delay"],
+                fast["primary_normalized_delay"],
+            )
+            self.assertAlmostEqual(
+                full["false_alarms_per_1000_clean_checks"],
+                fast["false_alarms_per_1000_clean_checks"],
+            )
+            self.assertAlmostEqual(
+                full["boundary_event_recall"],
+                fast["boundary_event_recall"],
+            )
 
     def test_boundary_attack_is_excluded_from_primary(self):
         world = WorldOOD(5002)
