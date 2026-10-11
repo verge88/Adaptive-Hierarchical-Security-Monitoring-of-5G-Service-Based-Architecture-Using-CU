@@ -1,0 +1,14 @@
+# NATIVE Open5GS v2.7.6 Service Communication Proxy, not a Python imitation.
+# Extends genuine native NRF/NSSF/AUSF core with a network-isolated SCP.
+# The research HTTP/2 client uses the 3GPP Target-apiRoot header and tests
+# native SCP routing to the real NRF and NSSF listening sockets.
+services:
+  scp:
+    image: ghcr.io/borjis131/scp:v2.7.6
+    command: ["-c", "/etc/open5gs/lab/scp.yaml"]
+    volumes:
+      - ./stage14-scp.yaml:/etc/open5gs/lab/scp.yaml:ro
+    ports:
+      - "127.0.0.1:7802:80"
+    depends_on: [nrf, nssf]
+    networks: [sbi]
