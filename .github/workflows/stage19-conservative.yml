@@ -1,0 +1,33 @@
+name: Stage19 conservative sparse development
+
+on:
+  push:
+    branches: ['stage19/multiscale-directional-memory']
+    paths:
+      - 'research/stage19_conservative_develop.py'
+      - '.github/workflows/stage19-conservative.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research
+      - name: Tune with zero-FA requirement and validate on fresh blocks
+        run: python -m research.stage19_conservative_develop --output stage19_conservative_development.json
+      - name: Publish result
+        run: cat stage19_conservative_development.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage19-conservative-development
+          path: stage19_conservative_development.json
+          retention-days: 30
