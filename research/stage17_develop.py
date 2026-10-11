@@ -30,9 +30,13 @@ from .stage17_detector import (
     ADAPTIVE_EPAGE_GRID,
     E_ASSISTED_PAGE_GRID,
     E_CONFIRMED_PAGE_GRID,
+    DIRECTIONAL_E_GRID,
     AdaptiveEPageConfig,
     EAssistedPageConfig,
     EConfirmedPageConfig,
+    DirectionalEConfig,
+    lower_tail_rank,
+    signed_discrepancy,
 )
 
 DEV_START_SEED = 6001
@@ -104,9 +108,33 @@ def build_trace(world):
                 )
             )
 
+    signed_calibration = []
+    for tick, row in enumerate(
+        world.samples[: WARMUP // STEP_SECONDS]
+    ):
+        for nf in fixed_schedule(tick):
+            signed_calibration.append(
+                signed_discrepancy(row[nf])
+            )
+
+    directional = []
+    for nf, t, _, _, _ in checks:
+        sample = world.samples[t // STEP_SECONDS][nf]
+        value = signed_discrepancy(sample)
+        p_positive = upper_tail_rank(
+            signed_calibration, value
+        )
+        p_negative = lower_tail_rank(
+            signed_calibration, value
+        )
+        directional.append(
+            (nf, t, p_positive, p_negative)
+        )
+
     return {
         "warm_reference": warm_reference,
         "checks": checks,
+        "directional": directional,
     }
 
 
@@ -283,6 +311,59 @@ def evaluate_e_confirmed_page_trace(world, trace, config):
     )
 
 
+def evaluate_directional_trace(world, trace, config):
+    positive = [0.0] * N_NF
+    negative = [0.0] * N_NF
+    found = {attack.nf: None for attack in world.attacks}
+    false_alarms = clean_checks = 0
+
+    for nf, t, p_positive, p_negative in trace["directional"]:
+        log_e_positive = math.log(
+            max(1e-12, power_betting_mixture(p_positive))
+        )
+        log_e_negative = math.log(
+            max(1e-12, power_betting_mixture(p_negative))
+        )
+        positive[nf] = max(
+            0.0,
+            config.decay * positive[nf]
+            + log_e_positive
+            - config.reference,
+        )
+        negative[nf] = max(
+            0.0,
+            config.decay * negative[nf]
+            + log_e_negative
+            - config.reference,
+        )
+
+        alert = (
+            (
+                positive[nf] >= config.threshold
+                and p_positive <= config.direction_gate_p
+            )
+            or (
+                negative[nf] >= config.threshold
+                and p_negative <= config.direction_gate_p
+            )
+        )
+
+        if world.active_attack(nf, t):
+            if alert and found[nf] is None:
+                found[nf] = t
+        else:
+            clean_checks += 1
+            false_alarms += int(alert)
+
+        if alert:
+            positive[nf] = 0.0
+            negative[nf] = 0.0
+
+    return event_summary(
+        world, found, false_alarms, clean_checks
+    )
+
+
 def evaluate_page_hinkley_trace(world, trace, config):
     mean = [1.0] * N_NF
     cumulative = [0.0] * N_NF
@@ -437,6 +518,21 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
             }
         )
 
+    directional_candidates = []
+    for config in DIRECTIONAL_E_GRID:
+        rows = [
+            evaluate_directional_trace(
+                world, trace, config
+            )
+            for world, trace in zip(worlds, traces)
+        ]
+        directional_candidates.append(
+            {
+                "config": config_dict(config),
+                "summary": summarize(rows),
+            }
+        )
+
     ph_candidates = []
     for config in PAGE_HINKLEY_DEV_GRID:
         rows = [
@@ -455,6 +551,7 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
     best_adaptive_e_page = select_best(hybrid_candidates)
     best_assisted = select_best(assisted_candidates)
     best_confirmed = select_best(confirmed_candidates)
+    best_directional = select_best(directional_candidates)
     best_ph = select_best(ph_candidates)
     best_hybrid = select_best(
         [
@@ -469,6 +566,10 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
             {
                 "family": "e_confirmed_page_hinkley",
                 **best_confirmed,
+            },
+            {
+                "family": "directional_e_process",
+                **best_directional,
             },
         ]
     )
@@ -486,12 +587,14 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
         "adaptive_e_page_grid_size": len(ADAPTIVE_EPAGE_GRID),
         "e_assisted_page_grid_size": len(E_ASSISTED_PAGE_GRID),
         "e_confirmed_page_grid_size": len(E_CONFIRMED_PAGE_GRID),
+        "directional_e_grid_size": len(DIRECTIONAL_E_GRID),
         "page_hinkley_grid_size": len(
             PAGE_HINKLEY_DEV_GRID
         ),
         "selected_adaptive_e_page": best_adaptive_e_page,
         "selected_e_assisted_page_hinkley": best_assisted,
         "selected_e_confirmed_page_hinkley": best_confirmed,
+        "selected_directional_e_process": best_directional,
         "selected_hybrid": best_hybrid,
         "selected_page_hinkley": best_ph,
         "development_effect_hybrid_minus_page_hinkley": {
