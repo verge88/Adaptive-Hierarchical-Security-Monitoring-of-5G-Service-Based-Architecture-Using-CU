@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
-from .stage15_detector import power_betting_mixture
+from .stage15_detector import power_betting_mixture, upper_tail_rank
 from .stage15_simulation import N_NF
 from .stage16_detectors import CalibratedSurprise
 
