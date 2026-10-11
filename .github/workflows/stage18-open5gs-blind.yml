@@ -103,10 +103,16 @@ jobs:
             echo "Private labels leaked into detector job"
             exit 1
           fi
+      - name: Locate label-free telemetry artifact
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
       - name: Run frozen Stage17 detectors blind
         run: |
           python -m research.stage18_detect \
-            --telemetry detector_input/telemetry.json \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
             --output stage18_detector
       - name: Upload detector alarms
         uses: actions/upload-artifact@v4
