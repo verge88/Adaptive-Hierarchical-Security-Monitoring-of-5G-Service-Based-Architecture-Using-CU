@@ -178,3 +178,137 @@ MULTISCALE_GRID = tuple(
     for gate in (0.04, 0.06, 0.08)
     for slow_gate in (0.06, 0.10, 0.15)
 )
+
+
+@dataclass(frozen=True)
+class SparseClusterDirectionalConfig:
+    """Stage-17 fast e-process plus a bounded same-direction tail-hit memory."""
+
+    cluster_decay: float
+    cluster_threshold: float
+    direction_gate_p: float
+    cluster_update_gate_p: float
+
+
+class SparseClusterDirectionalState:
+    """Persistent e-process plus sparse same-direction hit clustering.
+
+    The persistent path is exactly Stage 17.  The sparse path receives at most
+    one unit from any observation, regardless of how extreme its p-value is.
+    This prevents one heavy-tailed benign outlier from dominating the slow
+    state while allowing separated same-direction tail hits to accumulate.
+    """
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: SparseClusterDirectionalConfig,
+    ):
+        if not calibration:
+            raise ValueError("Calibration cannot be empty")
+        self.calibration = list(calibration)
+        self.config = config
+        self.fast_positive = 0.0
+        self.fast_negative = 0.0
+        self.cluster_positive = 0.0
+        self.cluster_negative = 0.0
+
+    def observe(self, value: float) -> dict:
+        p_positive = upper_tail_rank(
+            self.calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.calibration, value
+        )
+        log_e_positive = math.log(
+            max(1e-12, power_betting_mixture(p_positive))
+        )
+        log_e_negative = math.log(
+            max(1e-12, power_betting_mixture(p_negative))
+        )
+
+        self.fast_positive = max(
+            0.0,
+            0.90 * self.fast_positive
+            + log_e_positive
+            - 0.12,
+        )
+        self.fast_negative = max(
+            0.0,
+            0.90 * self.fast_negative
+            + log_e_negative
+            - 0.12,
+        )
+
+        self.cluster_positive = (
+            self.config.cluster_decay
+            * self.cluster_positive
+            + (
+                1.0
+                if p_positive
+                <= self.config.cluster_update_gate_p
+                else 0.0
+            )
+        )
+        self.cluster_negative = (
+            self.config.cluster_decay
+            * self.cluster_negative
+            + (
+                1.0
+                if p_negative
+                <= self.config.cluster_update_gate_p
+                else 0.0
+            )
+        )
+
+        positive_alert = (
+            p_positive <= self.config.direction_gate_p
+            and (
+                self.fast_positive >= 5.0
+                or self.cluster_positive
+                >= self.config.cluster_threshold
+            )
+        )
+        negative_alert = (
+            p_negative <= self.config.direction_gate_p
+            and (
+                self.fast_negative >= 5.0
+                or self.cluster_negative
+                >= self.config.cluster_threshold
+            )
+        )
+        alert = positive_alert or negative_alert
+
+        record = {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "fast_positive": self.fast_positive,
+            "fast_negative": self.fast_negative,
+            "cluster_positive": self.cluster_positive,
+            "cluster_negative": self.cluster_negative,
+            "positive_alert": positive_alert,
+            "negative_alert": negative_alert,
+            "alert": alert,
+        }
+
+        if alert:
+            self.fast_positive = 0.0
+            self.fast_negative = 0.0
+            self.cluster_positive = 0.0
+            self.cluster_negative = 0.0
+
+        return record
+
+
+SPARSE_CLUSTER_GRID = tuple(
+    SparseClusterDirectionalConfig(
+        cluster_decay=decay,
+        cluster_threshold=threshold,
+        direction_gate_p=gate,
+        cluster_update_gate_p=update_gate,
+    )
+    for decay in (0.85, 0.90, 0.95, 0.98)
+    for threshold in (1.8, 2.2, 2.6, 3.0, 3.5)
+    for gate in (0.04, 0.06)
+    for update_gate in (0.04, 0.06, 0.10)
+)
