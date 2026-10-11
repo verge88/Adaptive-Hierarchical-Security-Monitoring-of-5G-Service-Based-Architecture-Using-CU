@@ -111,6 +111,7 @@ class SemanticQuorumConfig:
     required_hits: int
     min_mismatched_paths: int
     large_mismatched_paths: int
+    recovery_clean_ticks: int
 
 
 class SemanticQuorumState:
@@ -171,23 +172,49 @@ class SemanticQuorumState:
         self.selected_paths = tuple(selected)
         self.enabled = bool(self.selected_paths)
         self.hit_ages: list[int] = []
+        self.recovery_remaining = 0
 
     def observe(
         self,
         trusted: dict[str, Counter[str]],
         consumer: dict[str, Counter[str]],
     ) -> dict:
-        self.hit_ages = [
-            age + 1
-            for age in self.hit_ages
-            if age + 1 < self.config.window_ticks
-        ]
-
         mismatch_count, token_distance, paths = projection_mismatch(
             trusted,
             consumer,
             self.selected_paths,
         )
+
+        # After an alarm, do not let residual attack pulses seed a second
+        # quorum that can spill into a clean gap. Recovery ends only after a
+        # configured number of exact paired matches in succession.
+        if self.recovery_remaining:
+            self.hit_ages.clear()
+            if mismatch_count == 0:
+                self.recovery_remaining -= 1
+            else:
+                self.recovery_remaining = (
+                    self.config.recovery_clean_ticks
+                )
+            return {
+                "enabled": self.enabled,
+                "selected_path_count": len(self.selected_paths),
+                "mismatched_path_count": mismatch_count,
+                "semantic_token_distance": token_distance,
+                "mismatched_paths": list(paths),
+                "quorum_hits": 0,
+                "in_recovery": True,
+                "recovery_remaining": self.recovery_remaining,
+                "large_alert": False,
+                "quorum_alert": False,
+                "alert": False,
+            }
+
+        self.hit_ages = [
+            age + 1
+            for age in self.hit_ages
+            if age + 1 < self.config.window_ticks
+        ]
         qualifies = (
             self.enabled
             and mismatch_count >= self.config.min_mismatched_paths
@@ -213,12 +240,15 @@ class SemanticQuorumState:
             "semantic_token_distance": token_distance,
             "mismatched_paths": list(paths),
             "quorum_hits": len(self.hit_ages),
+            "in_recovery": False,
+            "recovery_remaining": 0,
             "large_alert": large_alert,
             "quorum_alert": quorum_alert,
             "alert": alert,
         }
         if alert:
             self.hit_ages.clear()
+            self.recovery_remaining = self.config.recovery_clean_ticks
         return result
 
 
@@ -230,10 +260,12 @@ SEMANTIC_GRID = tuple(
         required_hits=hits,
         min_mismatched_paths=1,
         large_mismatched_paths=large,
+        recovery_clean_ticks=recovery,
     )
     for paired in (0.98, 1.00)
     for temporal in (0.90, 0.95, 1.00)
     for window in (8, 12, 16)
     for hits in (2, 3, 4)
     for large in (3, 5)
+    for recovery in (2, 3)
 )
