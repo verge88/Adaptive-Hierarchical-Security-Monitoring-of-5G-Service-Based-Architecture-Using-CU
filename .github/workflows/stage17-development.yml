@@ -1,0 +1,35 @@
+name: Stage17 development-only hybrid tuning
+
+on:
+  push:
+    branches: ['stage17/drift-adaptive-eph']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research stage17_tests
+      - name: Run Stage17 development invariants
+        run: python -m unittest discover -s stage17_tests -v
+      - name: Tune hybrid and Page-Hinkley on development block only
+        run: python -m research.stage17_develop --start-seed 6001 --seeds 40 --output stage17_development.json
+      - name: Publish development summary
+        run: cat stage17_development.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload development surface summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage17-development
+          path: stage17_development.json
+          retention-days: 30
