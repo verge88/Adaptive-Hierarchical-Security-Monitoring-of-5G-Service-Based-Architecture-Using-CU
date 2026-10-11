@@ -98,6 +98,7 @@ async def capture(seed: int):
 
             telemetry.append(
                 {
+                    "seed": seed,
                     "tick": tick,
                     "trusted_first": trusted_first,
                     "trusted_status": trusted["status"],
