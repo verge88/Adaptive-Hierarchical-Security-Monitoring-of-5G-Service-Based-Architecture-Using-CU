@@ -1,0 +1,36 @@
+name: Stage20 structural integrity development
+
+on:
+  push:
+    branches: ['stage20/structural-integrity']
+    paths:
+      - 'research/stage20_*.py'
+      - 'stage20_tests/**'
+      - '.github/workflows/stage20-development.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run structural invariants
+        run: |
+          python -m compileall -q research stage20_tests
+          python -m unittest discover -s stage20_tests -v
+      - name: Tune structural quorum on fresh blocks
+        run: python -m research.stage20_develop --output stage20_development.json
+      - name: Publish development result
+        run: cat stage20_development.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage20-development
+          path: stage20_development.json
+          retention-days: 30
