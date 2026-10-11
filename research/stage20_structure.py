@@ -202,7 +202,7 @@ STRUCTURAL_GRID = tuple(
     )
     for stability in (0.90, 0.95, 0.98, 1.00)
     for window in (12, 16, 20)
-    for hits in (2, 3)
+    for hits in (2, 3, 4)
     for min_diff in (1, 2)
     for large in (4, 6, 8)
 )
