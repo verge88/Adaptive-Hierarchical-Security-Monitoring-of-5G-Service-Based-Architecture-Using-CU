@@ -421,3 +421,63 @@ production guarantee.
 
 Full methodology, cumulative detection table and paper-ready interpretation are
 in **stage21/TIME_TO_DETECTION.md**.
+
+
+## Monitoring overhead and scalability benchmark
+
+A dedicated clean overhead block was executed on **64 independent Open5GS
+runners** using seeds **8801..8864**. No detector parameter or feature was
+changed.
+
+Canonical run: **38169182709**  
+Evaluation SHA: **c0c8f00eec06fcf2abf149fed0bb4480b3d57b82**  
+Final artifact: **stage21-64-run-monitoring-overhead-report**  
+Artifact ID: **11713461239**
+
+Measured workload:
+
+- 80 baseline + 80 monitored cycles per runner
+- 5,120 baseline cycles
+- 5,120 monitored cycles
+- 15,360 measured genuine native SCP -> NRF requests
+- 20,000 runner-cluster bootstrap resamples
+- 64 / 64 benchmark runners succeeded
+
+Key results:
+
+- single native SCP -> NRF request: **1.570 ms**
+  (95% cluster CI **[1.532, 1.596]**)
+- sequential paired monitoring cycle: **4.027 ms**
+  (**[3.908, 4.066]**)
+- incremental monitoring-cycle latency: **+2.456 ms**
+  (**[2.387, 2.478]**)
+- monitored/baseline latency ratio: **2.554**
+  (**[2.539, 2.565]**)
+- native request-count amplification: **2.0x**
+- measured HTTP/2 wire-byte amplification: **2.0x**
+- feature extraction for one paired observation: **0.8459 ms**
+  (**[0.8197, 0.8515]**)
+- full frozen Stage-21 detector update: **0.24529 ms/tick**
+  (**[0.24214, 0.24759]**)
+- detector throughput: **4076.8 tick updates/s**
+  (**[4038.9, 4129.8]**)
+
+The benchmark shows that the dominant current cost is acquisition of the second
+independent SCP -> NRF observation, not detector arithmetic.
+
+The current research serialization of structural + semantic telemetry is
+**11,811 bytes per clean pair**, versus **2,358 bytes** of raw response bodies,
+a **5.01x local-storage ratio**. These bytes are not injected into native SBI
+messages and must not be reported as 5G wire overhead.
+
+A key limitation is explicit: because every monitored sample performs a second
+reference request, Stage 21 does **not** by itself demonstrate a production-wide
+traffic overhead below 1%. Overall network overhead is determined mainly by the
+sampling fraction. The measured local compute and incremental h2c latency are
+below 10 ms in this lab, but production mTLS/OAuth/SEPP and concurrent operator
+load were not modeled.
+
+Full methodology and paper-ready interpretation:
+**stage21/OVERHEAD.md**.
+
+Seeds **8801..8864** are now evaluation-only and forbidden for future tuning.
