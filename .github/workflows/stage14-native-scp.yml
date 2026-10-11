@@ -1,0 +1,76 @@
+name: Stage 14 genuine Open5GS SCP native HTTP2 forwarding feasibility
+on:
+  push:
+    branches: ['experiment/stage14-native-open5gs-scp-path']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-scp-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Compile genuine SCP protocol and test routing header
+        run: |
+          python -m compileall -q research stage14_tests
+          python -m unittest discover -s stage14_tests -v
+      - name: Validate real Open5GS SCP + native NRF/NSSF Docker compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml config -q
+      - name: Start actual Open5GS v2.7.6 NRF AUSF NSSF SCP binaries
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml up -d --pull always
+      - name: Verify native HTTP2 NRF discovery of genuine NF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Prove SCP header-targeted H2 forwarding and causal stop/restart
+        run: python -m research.stage14_native_scp --seed $((5401 + ${{ matrix.shard }})) --output stage14_shard
+      - name: Capture native binaries image provenance and Open5GS log evidence
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml logs --no-color > diagnostics/native_open5gs.log 2>&1 || true
+      - name: Preserve original native SCP responses and causal controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage14-shard-${{ matrix.shard }}
+          path: |
+            stage14_shard/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable native Open5GS core and SCP
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml down --remove-orphans || true
+  route-audit:
+    needs: native-scp-route
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage14-shard-*
+          path: stage14_batches
+      - name: Audit all genuine NF target profiles, SCP shutdown controls and pair latencies
+        run: python -m research.stage14_report --input stage14_batches --output stage14_report
+      - name: Publish scientific feasibility report without attack claim
+        run: cat stage14_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage14-native-scp-scientific-feasibility
+          path: stage14_report/
+          retention-days: 90
