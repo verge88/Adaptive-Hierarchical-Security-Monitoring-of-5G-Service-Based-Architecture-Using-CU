@@ -1,15 +1,15 @@
 """Stage 21 conservative development for value-semantic integrity.
 
-Fresh blocks only:
-The first tuning attempt on 24001..24140 found no configuration with zero
-false alarms across both tuning regimes. Those blocks are inspected and never
-reused for selection.
+The first attempt on 24001..24140 found no zero-FA configuration. A second
+signature-agnostic attempt selected a tuning-feasible configuration but failed
+fresh race stress on 29001..29080. All of 24001..29080 used by those attempts
+are inspected and are never reused for final selection.
 
-Fresh blocks:
-- stable tuning:     27001..27040
-- race tuning:       27101..27140
-- stable validation: 28001..28120
-- race stress:       29001..29080
+Fresh signature-aware blocks:
+- stable tuning:     30001..30040
+- race tuning:       30101..30140
+- stable validation: 31001..31120
+- race stress:       32001..32080
 
 No historical Stage 17-20 live block or inspected Stage 20 synthetic block is
 used. Selection requires zero false alarms in BOTH tuning regimes before
@@ -55,13 +55,13 @@ TOTAL_TICKS = WARMUP + TOTAL_EPISODES * (
     EPISODE_TICKS + GAP_TICKS
 )
 
-STABLE_TUNE_START = 27001
+STABLE_TUNE_START = 30001
 STABLE_TUNE_SEEDS = 40
-RACE_TUNE_START = 27101
+RACE_TUNE_START = 30101
 RACE_TUNE_SEEDS = 40
-VALID_START = 28001
+VALID_START = 31001
 VALID_SEEDS = 120
-STRESS_START = 29001
+STRESS_START = 32001
 STRESS_SEEDS = 80
 FINAL_FA_CEILING = 0.50
 
@@ -186,14 +186,17 @@ class SemanticWorld:
             cursor = end + GAP_TICKS
 
         self.pairs = []
+        race_remaining = 0
+        race_value = ""
+        race_serial = 0
         for tick in range(TOTAL_TICKS):
             version = 1 if (tick // 43) % 2 else 0
             trusted = base_payload(tick, version)
             consumer = copy.deepcopy(trusted)
 
             # Nearby reference requests can observe benign dynamic values at
-            # slightly different instants. The paths are intentionally
-            # temporally unstable and should be excluded by calibration.
+            # slightly different instants. These paths must be excluded by
+            # warm-up temporal stability.
             consumer["serverTick"] = tick + 1
             consumer["dynamicEpoch"] = f"epoch-{tick + 1}"
             for index, profile in enumerate(consumer["nfInstances"]):
@@ -201,13 +204,27 @@ class SemanticWorld:
                     profile["load"] + 3 + index
                 ) % 101
 
-            # Rare legitimate registration race. A one-tick mismatch on a
-            # normally stable identity path must not trigger by itself.
-            race_probability = 0.001 if not race_stress else 0.025
-            if rng.random() < race_probability:
-                consumer["nfInstances"][1]["nfInstanceId"] = (
-                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+            # Legitimate registration races are transient. In the stress
+            # regime some last two paired samples with the SAME temporary
+            # identity, explicitly challenging a two-hit detector. Different
+            # race episodes receive different identities so only exact
+            # semantic mismatch signatures can accumulate together.
+            if race_remaining == 0:
+                start_probability = (
+                    0.0005 if not race_stress else 0.015
                 )
+                if rng.random() < start_probability:
+                    race_serial += 1
+                    race_remaining = (
+                        1 if not race_stress else rng.choice((1, 2))
+                    )
+                    suffix = f"{(self.seed + race_serial) % 10**12:012d}"
+                    race_value = (
+                        "eeeeeeee-eeee-eeee-eeee-" + suffix
+                    )
+            if race_remaining:
+                consumer["nfInstances"][1]["nfInstanceId"] = race_value
+                race_remaining -= 1
 
             episode = self.episode_for_tick(tick)
             if episode is not None and tick in episode.pulse_ticks:
@@ -451,14 +468,18 @@ def main():
                 [20001, 20080],
                 [21001, 23080],
             ],
-            "failed_stage21_tuning_blocks_inspected": [
+            "failed_stage21_blocks_inspected": [
                 [24001, 24040],
                 [24101, 24140],
+                [27001, 27040],
+                [27101, 27140],
+                [28001, 28120],
+                [29001, 29080],
             ],
-            "stable_tuning_block": [27001, 27040],
-            "race_tuning_block": [27101, 27140],
-            "stable_validation_block": [28001, 28120],
-            "race_stress_block": [29001, 29080],
+            "stable_tuning_block": [30001, 30040],
+            "race_tuning_block": [30101, 30140],
+            "stable_validation_block": [31001, 31120],
+            "race_stress_block": [32001, 32080],
             "zero_false_alarm_required_on_both_tuning_regimes": True,
             "final_false_alarm_ceiling_per_1000": FINAL_FA_CEILING,
             "boundary_family_excluded_from_selection": True,
