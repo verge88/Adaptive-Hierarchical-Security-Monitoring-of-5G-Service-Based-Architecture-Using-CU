@@ -34,12 +34,16 @@ from .stage19_detector import (
     SINGLE_SCALE_GRID,
     SPARSE_SCAN_GRID,
     SINGLE_WINDOW_SCAN_GRID,
+    ROBUST_SPARSE_SCAN_GRID,
+    ROBUST_SINGLE_WINDOW_SCAN_GRID,
     MultiScaleDirectionalConfig,
     ScalarPageHinkleyConfig,
     SingleScaleDirectionalConfig,
     SparseEScanConfig,
+    RobustSparseEScanConfig,
     log_mean_exp,
     lower_tail_rank,
+    robust_center_scale,
 )
 from .stage19_simulation import (
     PERSISTENT_KINDS,
@@ -347,6 +351,94 @@ def evaluate_sparse_scan(world, prepared, config):
     )
 
 
+def evaluate_robust_sparse_scan(world, prepared, config):
+    center, scale = robust_center_scale(
+        prepared["calibration"]
+    )
+    positive_hits = []
+    negative_hits = []
+    alerts = set()
+    clean = clean_tick_set(world)
+    false = 0
+
+    for (
+        tick,
+        p_positive,
+        p_negative,
+        _,
+        log_positive,
+        log_negative,
+        _,
+    ) in prepared["trace"]:
+        z = (world.values[tick] - center) / scale
+        max_window = max(config.windows)
+        floor = tick - max_window + 1
+        positive_hits = [
+            item for item in positive_hits
+            if item[0] >= floor
+        ]
+        negative_hits = [
+            item for item in negative_hits
+            if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= config.tail_gate_p
+            and z >= config.magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= config.tail_gate_p
+            and z <= -config.magnitude_gate_z
+        )
+        if positive_hit:
+            positive_hits.append(
+                (tick, max(0.0, log_positive))
+            )
+        if negative_hit:
+            negative_hits.append(
+                (tick, max(0.0, log_negative))
+            )
+
+        positive_alarm = False
+        negative_alarm = False
+        for window in config.windows:
+            window_floor = tick - window + 1
+            positive_values = [
+                value
+                for hit_tick, value in positive_hits
+                if hit_tick >= window_floor
+            ]
+            negative_values = [
+                value
+                for hit_tick, value in negative_hits
+                if hit_tick >= window_floor
+            ]
+            positive_alarm = positive_alarm or (
+                len(positive_values) >= config.min_hits
+                and sum(positive_values)
+                >= config.e_sum_threshold
+            )
+            negative_alarm = negative_alarm or (
+                len(negative_values) >= config.min_hits
+                and sum(negative_values)
+                >= config.e_sum_threshold
+            )
+
+        alarm = (
+            (positive_hit or negative_hit)
+            and (positive_alarm or negative_alarm)
+        )
+        if alarm:
+            alerts.add(tick)
+            false += int(tick in clean)
+            positive_hits = []
+            negative_hits = []
+
+    return event_metrics(
+        world, alerts, false, len(clean)
+    )
+
+
 def evaluate_page_hinkley(world, prepared, config):
     mean = 1.0
     cumulative = 0.0
@@ -485,6 +577,14 @@ def develop(
             SINGLE_WINDOW_SCAN_GRID,
             evaluate_sparse_scan,
         ),
+        "robust_sparse_scan_multiscale": (
+            ROBUST_SPARSE_SCAN_GRID,
+            evaluate_robust_sparse_scan,
+        ),
+        "robust_sparse_scan_single_window": (
+            ROBUST_SINGLE_WINDOW_SCAN_GRID,
+            evaluate_robust_sparse_scan,
+        ),
         "page_hinkley": (
             PAGE_HINKLEY_GRID,
             evaluate_page_hinkley,
@@ -538,6 +638,8 @@ def develop(
     single = output["selected"]["single_scale_directional"]
     scan_multi = output["selected"]["sparse_scan_multiscale"]
     scan_single = output["selected"]["sparse_scan_single_window"]
+    robust_multi = output["selected"]["robust_sparse_scan_multiscale"]
+    robust_single = output["selected"]["robust_sparse_scan_single_window"]
     output["development_effect_multiscale_minus_single"] = {
         key: multi["summary"][key] - single["summary"][key]
         for key in multi["summary"]
@@ -549,9 +651,16 @@ def develop(
         )
         for key in scan_multi["summary"]
     }
+    output["development_effect_robust_scan_multi_minus_single_window"] = {
+        key: (
+            robust_multi["summary"][key]
+            - robust_single["summary"][key]
+        )
+        for key in robust_multi["summary"]
+    }
     output["stage19_candidate"] = {
-        "family": "sparse_scan_multiscale",
-        **scan_multi,
+        "family": "robust_sparse_scan_multiscale",
+        **robust_multi,
     }
     return output
 
