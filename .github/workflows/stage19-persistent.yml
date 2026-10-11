@@ -1,0 +1,34 @@
+name: Stage19 fast persistent-channel selection
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_persistent_select.py'
+      - 'research/stage19_detector.py'
+      - '.github/workflows/stage19-persistent.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m compileall -q research
+      - name: Select sustained-sign channel on development block
+        run: python -m research.stage19_persistent_select --output stage19_persistent_selection.json
+      - name: Publish selection
+        run: cat stage19_persistent_selection.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage19-persistent-selection
+          path: stage19_persistent_selection.json
+          retention-days: 30
