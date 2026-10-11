@@ -257,3 +257,79 @@ without production mTLS/OAuth/SEPP behavior. The experiment does not prove:
 The next detector change, if pursued, should target relational entity semantics
 rather than another scalar threshold. The Stage-21 live seeds 8401..8408 must
 remain untouched evaluation data.
+
+
+## Large-scale frozen replication: 128 independent Open5GS runners
+
+To strengthen the statistical basis without changing the detector, Stage 21 was
+replicated on **128 new independent Open5GS runners** using seeds
+**8501..8628**. The detector configuration was identical to the configuration
+frozen before the first live block 8401..8408.
+
+No seed from this replication was used for model selection, threshold tuning or
+feature design. Each runner independently repeated the complete native
+Open5GS SCP/NRF capture, separate telemetry/label upload, blind detection and
+post-hoc audit procedure.
+
+Canonical replication workflow:
+
+- GitHub Actions run: **38160873208**
+- evaluation head SHA: **22d4207b326c768c920b57f8e954f4d8d8c06998**
+- captures completed successfully: **128 / 128**
+- blind detectors completed successfully: **128 / 128**
+- final audit: **success**
+- final report artifact: **stage21-128-run-open5gs-replication-report**
+- report artifact ID: **11711065745**
+
+The audit used **50,000 runner-cluster bootstrap resamples** for paired
+confidence intervals.
+
+### Replication result
+
+| Detector | Primary event recall | Penalized delay (ticks) | False alarms | Clean ticks | FA / 1000 |
+|---|---:|---:|---:|---:|---:|
+| Page-Hinkley | 0.164 | 10.69 | 0 | 10,752 | 0.0000 |
+| Stage-17 directional | 0.167 | 11.33 | 0 | 10,752 | 0.0000 |
+| Stage-19 sparse directional | 0.167 | 10.17 | 0 | 10,752 | 0.0000 |
+| Stage-20 structural combined | 0.285 | 9.58 | 0 | 10,752 | 0.0000 |
+| **Stage-21 semantic combined** | **1.000** | **5.74** | **0** | **10,752** | **0.0000** |
+
+Stage 21 minus Stage 20, paired by independent runner:
+
+- primary event recall difference: **+0.715**
+- 95% runner-cluster bootstrap CI: **[+0.706, +0.724]**
+- penalized delay difference: **-3.84 ticks**
+- 95% CI: **[-3.94, -3.74]**
+- observed false-alarm difference: **0.0000 / 1000**
+- 95% runner-cluster bootstrap CI: **[0.0000, 0.0000]**
+
+The Stage-21 semantic channel enabled on **128 / 128 runners** and selected a
+mean of **23.0 stable scalar paths**.
+
+Across six primary families and two repetitions per family per runner, the
+replication contains **1,536 primary attack episodes**. Stage 21 detected all
+**1,536 / 1,536** primary episodes.
+
+### Per-family replication recall
+
+| Family | Page-Hinkley | Stage 17 | Stage 19 | Stage 20 | Stage 21 |
+|---|---:|---:|---:|---:|---:|
+| identity_value_sparse | 0.000 | 0.000 | 0.000 | 0.000 | **1.000** |
+| number_value_sparse | 0.000 | 0.000 | 0.000 | 0.000 | **1.000** |
+| scheme_value_sparse | 0.000 | 0.000 | 0.000 | 0.000 | **1.000** |
+| status_value_sparse | 0.023 | 0.000 | 0.000 | 0.000 | **1.000** |
+| structural_leaf_delete_sparse | 0.035 | 0.000 | 0.000 | 0.711 | **1.000** |
+| profile_drop_persistent | 0.926 | 1.000 | 1.000 | 1.000 | **1.000** |
+
+The preregistered relational boundary again remained undetected:
+
+- boundary_cross_profile_identity_swap: Stage-21 recall **0.000**
+
+This larger replication substantially narrows the runner-level uncertainty
+around the Stage-21 gain and shows zero observed false alarms over **10,752
+clean live ticks**. This remains an empirical lab result; correlated ticks and
+the controlled post-SCP environment mean the zero count must not be interpreted
+as a universal production false-alarm guarantee.
+
+Seeds **8501..8628** are now evaluation-only and are forbidden for any future
+detector tuning.
