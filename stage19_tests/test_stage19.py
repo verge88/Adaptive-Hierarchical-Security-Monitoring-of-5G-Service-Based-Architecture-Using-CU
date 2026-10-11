@@ -15,6 +15,7 @@ from research.stage19_develop import (
     evaluate_robust_sparse_scan,
     evaluate_adaptive_robust_sparse_scan,
     evaluate_dual_path,
+    evaluate_sparse_plus_directional,
 )
 from research.stage19_detector import (
     MultiScaleDirectionalConfig,
@@ -31,6 +32,8 @@ from research.stage19_detector import (
     AdaptiveRobustSparseEScanDetector,
     DualPathDirectionalConfig,
     DualPathDirectionalDetector,
+    SparsePlusDirectionalConfig,
+    SparsePlusDirectionalDetector,
 )
 from research.stage19_simulation import (
     ALL_KINDS,
@@ -232,6 +235,41 @@ class Stage19ReplayTests(unittest.TestCase):
         )
         fast = evaluate_dual_path(world, trace, config)
         full = DualPathDirectionalDetector(
+            trace["calibration"], config
+        )
+        alerts = replay_full(world, full)
+        detected = [
+            any(
+                ep.start_tick <= tick < ep.end_tick
+                for tick in alerts
+            )
+            for ep in world.episodes
+        ]
+        self.assertAlmostEqual(
+            fast["event_recall"],
+            sum(detected) / len(detected),
+        )
+
+    def test_sparse_plus_directional_fast_replay_matches_full(self):
+        world = SparseIntegrityWorld(9009)
+        trace = build_trace(world)
+        config = SparsePlusDirectionalConfig(
+            sparse_windows=(16, 32, 64),
+            sparse_tail_gate_p=0.07,
+            sparse_magnitude_gate_z=3.5,
+            sparse_min_hits=2,
+            sparse_e_sum_threshold=2.2,
+            center_alpha=0.03,
+            scale_alpha=0.02,
+            single_decay=0.90,
+            single_reference=0.12,
+            single_threshold=7.0,
+            single_gate_p=0.04,
+        )
+        fast = evaluate_sparse_plus_directional(
+            world, trace, config
+        )
+        full = SparsePlusDirectionalDetector(
             trace["calibration"], config
         )
         alerts = replay_full(world, full)
