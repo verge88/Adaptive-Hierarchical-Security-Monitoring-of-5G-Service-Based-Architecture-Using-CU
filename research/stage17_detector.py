@@ -268,3 +268,99 @@ E_ASSISTED_PAGE_GRID = tuple(
     for decay in (0.50, 0.70, 0.85)
     for gain in (0.10, 0.20, 0.30)
 )
+
+
+@dataclass(frozen=True)
+class EConfirmedPageConfig:
+    """Low-threshold Page-Hinkley requiring accumulated e-confirmation."""
+
+    mean_alpha: float
+    delta: float
+    threshold: float
+    integrity_gate_p: float
+    e_decay: float
+    e_confirm_threshold: float
+    joint_weight: float = 0.30
+
+
+class EConfirmedPageHinkleyDetector(CalibratedSurprise):
+    """Page-Hinkley with a decaying e-memory used as an alarm confirmation.
+
+    Unlike EAssistedPageHinkleyDetector, e-evidence does not lower the change
+    threshold. Instead the PH threshold can be lower, while an alarm requires
+    both current integrity-tail evidence and accumulated positive log e-value.
+    This is intended to reject isolated reconciliation outliers.
+    """
+
+    def __init__(self, world, config: EConfirmedPageConfig):
+        super().__init__(world)
+        self.config = config
+        self.mean = [1.0] * N_NF
+        self.cumulative = [0.0] * N_NF
+        self.minimum = [0.0] * N_NF
+        self.e_memory = [0.0] * N_NF
+
+    def observe(
+        self,
+        nf: int,
+        sample,
+        hierarchical_risk: float,
+    ) -> bool:
+        surprise, p_integrity, p_joint = self.evidence_features(
+            nf, sample, hierarchical_risk
+        )
+        self.mean[nf] = (
+            (1.0 - self.config.mean_alpha) * self.mean[nf]
+            + self.config.mean_alpha * surprise
+        )
+        self.cumulative[nf] += (
+            surprise - self.mean[nf] - self.config.delta
+        )
+        self.minimum[nf] = min(
+            self.minimum[nf], self.cumulative[nf]
+        )
+        ph_statistic = (
+            self.cumulative[nf] - self.minimum[nf]
+        )
+
+        e_integrity = power_betting_mixture(p_integrity)
+        e_joint = power_betting_mixture(p_joint)
+        e_value = (
+            (1.0 - self.config.joint_weight) * e_integrity
+            + self.config.joint_weight * e_joint
+        )
+        self.e_memory[nf] = (
+            self.config.e_decay * self.e_memory[nf]
+            + max(0.0, math.log(max(1e-12, e_value)))
+        )
+
+        alarm = (
+            ph_statistic >= self.config.threshold
+            and p_integrity <= self.config.integrity_gate_p
+            and self.e_memory[nf]
+            >= self.config.e_confirm_threshold
+        )
+        if alarm:
+            self.cumulative[nf] = 0.0
+            self.minimum[nf] = 0.0
+            self.e_memory[nf] = 0.0
+
+        return alarm
+
+
+E_CONFIRMED_PAGE_GRID = tuple(
+    EConfirmedPageConfig(
+        mean_alpha=alpha,
+        delta=delta,
+        threshold=threshold,
+        integrity_gate_p=gate,
+        e_decay=decay,
+        e_confirm_threshold=e_threshold,
+    )
+    for alpha in (0.07, 0.10)
+    for delta in (0.35, 0.50, 0.65)
+    for threshold in (4.0, 5.5, 7.0, 8.5)
+    for gate in (0.06, 0.08, 0.10)
+    for decay in (0.50, 0.70, 0.85)
+    for e_threshold in (0.35, 0.70, 1.10, 1.60)
+)
