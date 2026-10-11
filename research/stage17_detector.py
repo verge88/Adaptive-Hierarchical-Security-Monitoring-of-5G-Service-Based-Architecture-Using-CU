@@ -161,3 +161,110 @@ ADAPTIVE_EPAGE_GRID = tuple(
     for gate in (0.03, 0.06, 0.10)
     for cap in (0.35, 0.70, 1.20)
 )
+
+
+@dataclass(frozen=True)
+class EAssistedPageConfig:
+    """Page-Hinkley with a decaying positive log-e assistance channel."""
+
+    mean_alpha: float
+    delta: float
+    threshold: float
+    integrity_gate_p: float
+    e_decay: float
+    e_gain: float
+    max_threshold_discount: float = 0.50
+    joint_weight: float = 0.30
+
+
+class EAssistedPageHinkleyDetector(CalibratedSurprise):
+    """Drift-adaptive PH whose threshold is modulated by persistent e-evidence.
+
+    Page-Hinkley remains the primary drift-aware change statistic. A second
+    memory integrates only positive log e-evidence. Isolated clean spikes decay
+    quickly; repeated integrity evidence lowers the PH alarm threshold by at
+    most the configured maximum discount.
+    """
+
+    def __init__(self, world, config: EAssistedPageConfig):
+        super().__init__(world)
+        self.config = config
+        self.mean = [1.0] * N_NF
+        self.cumulative = [0.0] * N_NF
+        self.minimum = [0.0] * N_NF
+        self.e_memory = [0.0] * N_NF
+
+    def observe(
+        self,
+        nf: int,
+        sample,
+        hierarchical_risk: float,
+    ) -> bool:
+        surprise, p_integrity, p_joint = self.evidence_features(
+            nf, sample, hierarchical_risk
+        )
+
+        self.mean[nf] = (
+            (1.0 - self.config.mean_alpha) * self.mean[nf]
+            + self.config.mean_alpha * surprise
+        )
+        self.cumulative[nf] += (
+            surprise - self.mean[nf] - self.config.delta
+        )
+        self.minimum[nf] = min(
+            self.minimum[nf], self.cumulative[nf]
+        )
+        ph_statistic = (
+            self.cumulative[nf] - self.minimum[nf]
+        )
+
+        e_integrity = power_betting_mixture(p_integrity)
+        e_joint = power_betting_mixture(p_joint)
+        e_value = (
+            (1.0 - self.config.joint_weight) * e_integrity
+            + self.config.joint_weight * e_joint
+        )
+        positive_log_e = max(
+            0.0, math.log(max(1e-12, e_value))
+        )
+        self.e_memory[nf] = (
+            self.config.e_decay * self.e_memory[nf]
+            + positive_log_e
+        )
+
+        discount = min(
+            self.config.max_threshold_discount,
+            self.config.e_gain * self.e_memory[nf],
+        )
+        effective_threshold = (
+            self.config.threshold * (1.0 - discount)
+        )
+
+        alarm = (
+            ph_statistic >= effective_threshold
+            and p_integrity <= self.config.integrity_gate_p
+        )
+        if alarm:
+            self.cumulative[nf] = 0.0
+            self.minimum[nf] = 0.0
+            self.e_memory[nf] = 0.0
+
+        return alarm
+
+
+E_ASSISTED_PAGE_GRID = tuple(
+    EAssistedPageConfig(
+        mean_alpha=alpha,
+        delta=delta,
+        threshold=threshold,
+        integrity_gate_p=gate,
+        e_decay=decay,
+        e_gain=gain,
+    )
+    for alpha in (0.07, 0.10)
+    for delta in (0.40, 0.50, 0.60)
+    for threshold in (8.0, 10.0, 12.0)
+    for gate in (0.06, 0.08, 0.10)
+    for decay in (0.50, 0.70, 0.85)
+    for gain in (0.10, 0.20, 0.30)
+)
