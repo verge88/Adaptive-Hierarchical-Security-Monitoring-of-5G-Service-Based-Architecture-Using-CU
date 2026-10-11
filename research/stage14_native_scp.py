@@ -85,7 +85,8 @@ async def h2_exchange(base,path,*,target=None,method="GET",timeout=4):
             stream=connection.get_next_available_stream_id()
             headers=[(":method",method),(":scheme","http"),
                      (":authority",url.netloc),(":path",path),
-                     ("accept","application/json, application/problem+json")]
+                     ("accept","application/json, application/problem+json"),
+                     ("user-agent","AMF-Stage14-Research-H2C")]
             if target is not None:
                 headers.append(("3gpp-sbi-target-apiroot",target))
             connection.send_headers(stream,headers,end_stream=True)
