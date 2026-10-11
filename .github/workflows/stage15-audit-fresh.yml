@@ -1,0 +1,37 @@
+name: Stage15 fresh-seed audit
+
+on:
+  push:
+    branches: ['audit/stage15-fresh-seeds-3001']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research stage15_tests
+      - name: Run Stage15 invariant tests
+        run: python -m unittest discover -s stage15_tests -v
+      - name: Run fresh untouched seed audit
+        run: python -m research.stage15_experiment --start-seed 3001 --seeds 200 --output stage15_audit_results
+      - name: Publish audit report
+        run: cat stage15_audit_results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage15-fresh-seed-audit
+          path: stage15_audit_results/
+          if-no-files-found: warn
+          retention-days: 30
