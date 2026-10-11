@@ -49,3 +49,20 @@ SCP-like counters. See [live/README.md](live/README.md). Native Open5GS NFs are
 **not** modified to accept CU; results are accelerated logical-time tests, not
 measured real-life 5G detection latency. This stage is not a replacement for
 field traffic validation.
+
+## Stage 15: hierarchical sequential evidence detector
+
+Stage 15 adds a harder synthetic benchmark with concept drift, maintenance
+events, benign bursts, heteroscedastic counter noise, reconciliation outliers,
+and low-and-slow/ramp/intermittent attacks. It compares the legacy static rule,
+a separately tuned static baseline, and a new hierarchical e-CUSUM change
+detector under the **same fixed CU schedule and probe budget**.
+
+The detector uses clean warm-up ranks of integrity discrepancy and a bounded
+hierarchical corroboration score, converts them to a mixture of power-betting
+evidence, and accumulates that evidence sequentially per NF. Attack labels are
+never passed into the detector. Parameters are frozen before the held-out seed
+block.
+
+See [stage15/README.md](stage15/README.md) for the literature basis, protocol,
+reproduction commands, and limitations.

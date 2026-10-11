@@ -1,0 +1,43 @@
+name: Stage15 hierarchical e-detector
+
+on:
+  push:
+    branches: ['experiment/stage15-hierarchical-e-detector']
+  pull_request:
+    paths:
+      - 'research/stage15_*.py'
+      - 'stage15/**'
+      - 'stage15_tests/**'
+      - '.github/workflows/stage15-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-heldout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research stage15_tests
+      - name: Run Stage15 invariants and held-out regression tests
+        run: python -m unittest discover -s stage15_tests -v
+      - name: Run predeclared held-out comparison
+        run: python -m research.stage15_experiment --start-seed 2001 --seeds 80 --output stage15_results
+      - name: Publish Stage15 report in job summary
+        run: cat stage15_results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw Stage15 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage15-hierarchical-e-detector
+          path: stage15_results/
+          if-no-files-found: warn
+          retention-days: 30
