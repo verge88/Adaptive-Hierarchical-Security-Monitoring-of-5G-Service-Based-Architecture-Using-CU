@@ -1,0 +1,48 @@
+name: Stage21 clustered time-to-detection statistics
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage21_time_to_detection.py'
+      - '.github/workflows/stage21-time-to-detection.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile time-to-detection analysis
+        run: python -m py_compile research/stage21_time_to_detection.py
+      - name: Download frozen 128-run replication artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 38160873208
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: stage21-rep-*
+          path: stage21_rep_batches
+      - name: Verify all frozen replication components are present
+        run: |
+          test "$(find stage21_rep_batches -name private_labels.json | wc -l)" -eq 128
+          test "$(find stage21_rep_batches -name alarms.json | wc -l)" -eq 128
+          test "$(find stage21_rep_batches -name provenance.json | wc -l)" -eq 128
+      - name: Compute clustered time-to-detection statistics
+        run: |
+          python -m research.stage21_time_to_detection             --input stage21_rep_batches             --output stage21_time_to_detection
+      - name: Publish time-to-detection report
+        run: cat stage21_time_to_detection/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload time-to-detection analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-time-to-detection-128-run-report
+          path: stage21_time_to_detection/
+          retention-days: 90
