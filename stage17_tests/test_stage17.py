@@ -10,6 +10,8 @@ from research.stage17_detector import (
     EAssistedPageHinkleyDetector,
     EConfirmedPageConfig,
     EConfirmedPageHinkleyDetector,
+    DirectionalEConfig,
+    DirectionalEProcessDetector,
 )
 from research.stage17_develop import (
     DEV_START_SEED,
@@ -21,6 +23,7 @@ from research.stage17_develop import (
     evaluate_hybrid_trace,
     evaluate_e_assisted_page_trace,
     evaluate_e_confirmed_page_trace,
+    evaluate_directional_trace,
 )
 
 
@@ -130,6 +133,36 @@ class Stage17DevelopmentTests(unittest.TestCase):
             EConfirmedPageHinkleyDetector(world, config),
         )
         fast = evaluate_e_confirmed_page_trace(
+            world,
+            build_trace(world),
+            config,
+        )
+        self.assertAlmostEqual(
+            full["primary_event_recall"],
+            fast["event_recall"],
+        )
+        self.assertAlmostEqual(
+            full["primary_horizon_penalized_delay_s"],
+            fast["horizon_penalized_delay_s"],
+        )
+        self.assertAlmostEqual(
+            full["false_alarms_per_1000_clean_checks"],
+            fast["false_alarms_per_1000"],
+        )
+
+    def test_fast_directional_replay_matches_full_detector(self):
+        world = WorldOOD(6005)
+        config = DirectionalEConfig(
+            decay=0.97,
+            reference=0.12,
+            threshold=3.5,
+            direction_gate_p=0.06,
+        )
+        full = evaluate_detector(
+            world,
+            DirectionalEProcessDetector(world, config),
+        )
+        fast = evaluate_directional_trace(
             world,
             build_trace(world),
             config,
