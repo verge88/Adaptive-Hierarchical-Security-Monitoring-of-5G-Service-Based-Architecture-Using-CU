@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import statistics
 
 from .stage15_detector import (
     power_betting_mixture,
@@ -418,4 +419,153 @@ SINGLE_WINDOW_SCAN_GRID = tuple(
     for gate in (0.04, 0.07, 0.10)
     for min_hits in (2, 3)
     for threshold in (1.2, 1.6, 2.0, 2.6, 3.2)
+)
+
+
+def robust_center_scale(calibration: list[float]) -> tuple[float, float]:
+    center = statistics.median(calibration)
+    mad = statistics.median(
+        abs(value - center) for value in calibration
+    )
+    return center, max(1e-6, 1.4826 * mad)
+
+
+@dataclass(frozen=True)
+class RobustSparseEScanConfig:
+    """Sparse directional scan with independent robust-amplitude gate."""
+
+    windows: tuple[int, ...]
+    tail_gate_p: float
+    magnitude_gate_z: float
+    min_hits: int
+    e_sum_threshold: float
+
+
+class RobustSparseEScanDetector:
+    """Multi-window e-scan requiring both rank-tail and MAD-scale evidence."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: RobustSparseEScanConfig,
+    ):
+        self.calibration = list(calibration)
+        self.config = config
+        self.center, self.scale = robust_center_scale(
+            calibration
+        )
+        self.positive_hits: list[tuple[int, float]] = []
+        self.negative_hits: list[tuple[int, float]] = []
+        self.tick = -1
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+        p_positive = upper_tail_rank(
+            self.calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.calibration, value
+        )
+        z = (value - self.center) / self.scale
+
+        max_window = max(self.config.windows)
+        floor = self.tick - max_window + 1
+        self.positive_hits = [
+            item for item in self.positive_hits if item[0] >= floor
+        ]
+        self.negative_hits = [
+            item for item in self.negative_hits if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= self.config.tail_gate_p
+            and z >= self.config.magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= self.config.tail_gate_p
+            and z <= -self.config.magnitude_gate_z
+        )
+        if positive_hit:
+            self.positive_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_positive)))
+            )
+        if negative_hit:
+            self.negative_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_negative)))
+            )
+
+        positive_alarm = False
+        negative_alarm = False
+        diagnostics = {}
+        for direction, hits in (
+            ("positive", self.positive_hits),
+            ("negative", self.negative_hits),
+        ):
+            direction_stats = {}
+            for window in self.config.windows:
+                window_floor = self.tick - window + 1
+                values = [
+                    evidence
+                    for hit_tick, evidence in hits
+                    if hit_tick >= window_floor
+                ]
+                direction_stats[str(window)] = {
+                    "hits": len(values),
+                    "log_e_sum": sum(values),
+                }
+                passed = (
+                    len(values) >= self.config.min_hits
+                    and sum(values)
+                    >= self.config.e_sum_threshold
+                )
+                if direction == "positive":
+                    positive_alarm = positive_alarm or passed
+                else:
+                    negative_alarm = negative_alarm or passed
+            diagnostics[direction] = direction_stats
+
+        current_hit = positive_hit or negative_hit
+        alarm = current_hit and (
+            positive_alarm or negative_alarm
+        )
+        if alarm:
+            self.positive_hits = []
+            self.negative_hits = []
+
+        return alarm, {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "robust_z": z,
+            "windows": diagnostics,
+        }
+
+
+ROBUST_SPARSE_SCAN_GRID = tuple(
+    RobustSparseEScanConfig(
+        windows=windows,
+        tail_gate_p=gate,
+        magnitude_gate_z=z_gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+    )
+    for windows in SPARSE_SCAN_BANKS
+    for gate in (0.04, 0.07)
+    for z_gate in (3.0, 4.0, 5.0)
+    for min_hits in (2, 3)
+    for threshold in (1.6, 2.2, 2.8, 3.4)
+)
+
+ROBUST_SINGLE_WINDOW_SCAN_GRID = tuple(
+    RobustSparseEScanConfig(
+        windows=(window,),
+        tail_gate_p=gate,
+        magnitude_gate_z=z_gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+    )
+    for window in (12, 18, 24, 36)
+    for gate in (0.04, 0.07)
+    for z_gate in (3.0, 4.0, 5.0)
+    for min_hits in (2, 3)
+    for threshold in (1.6, 2.2, 2.8, 3.4)
 )
