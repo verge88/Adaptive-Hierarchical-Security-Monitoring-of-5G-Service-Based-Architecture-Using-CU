@@ -1,10 +1,15 @@
 """Stage 21 conservative development for value-semantic integrity.
 
 Fresh blocks only:
-- stable tuning:     24001..24040
-- race tuning:       24101..24140
-- stable validation: 25001..25120
-- race stress:       26001..26080
+The first tuning attempt on 24001..24140 found no configuration with zero
+false alarms across both tuning regimes. Those blocks are inspected and never
+reused for selection.
+
+Fresh blocks:
+- stable tuning:     27001..27040
+- race tuning:       27101..27140
+- stable validation: 28001..28120
+- race stress:       29001..29080
 
 No historical Stage 17-20 live block or inspected Stage 20 synthetic block is
 used. Selection requires zero false alarms in BOTH tuning regimes before
@@ -50,13 +55,13 @@ TOTAL_TICKS = WARMUP + TOTAL_EPISODES * (
     EPISODE_TICKS + GAP_TICKS
 )
 
-STABLE_TUNE_START = 24001
+STABLE_TUNE_START = 27001
 STABLE_TUNE_SEEDS = 40
-RACE_TUNE_START = 24101
+RACE_TUNE_START = 27101
 RACE_TUNE_SEEDS = 40
-VALID_START = 25001
+VALID_START = 28001
 VALID_SEEDS = 120
-STRESS_START = 26001
+STRESS_START = 29001
 STRESS_SEEDS = 80
 FINAL_FA_CEILING = 0.50
 
@@ -446,10 +451,14 @@ def main():
                 [20001, 20080],
                 [21001, 23080],
             ],
-            "stable_tuning_block": [24001, 24040],
-            "race_tuning_block": [24101, 24140],
-            "stable_validation_block": [25001, 25120],
-            "race_stress_block": [26001, 26080],
+            "failed_stage21_tuning_blocks_inspected": [
+                [24001, 24040],
+                [24101, 24140],
+            ],
+            "stable_tuning_block": [27001, 27040],
+            "race_tuning_block": [27101, 27140],
+            "stable_validation_block": [28001, 28120],
+            "race_stress_block": [29001, 29080],
             "zero_false_alarm_required_on_both_tuning_regimes": True,
             "final_false_alarm_ceiling_per_1000": FINAL_FA_CEILING,
             "boundary_family_excluded_from_selection": True,
