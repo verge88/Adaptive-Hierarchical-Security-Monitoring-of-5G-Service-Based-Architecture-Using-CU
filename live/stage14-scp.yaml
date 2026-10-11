@@ -1,0 +1,17 @@
+# Adapted from official Open5GS v2.7.6 configs/open5gs/scp.yaml.in
+# Only the native SCP can perform forwarding on :7802. No lab proxy inserted.
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/scp.log
+
+global:
+
+scp:
+  sbi:
+    server:
+      - address: scp
+        port: 80
+    client:
+      nrf:
+        - uri: http://nrf:80
