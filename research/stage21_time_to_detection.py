@@ -6,8 +6,8 @@ This is analysis-only. It reuses evaluation artifacts from canonical run
 Primary endpoints:
 - cumulative detection probability by tick;
 - median delay among detected events;
-- Kaplan-Meier-style median time to detection under common administrative
-  censoring at 12 ticks (undefined when <50% are detected);
+- administrative median time to detection under common censoring at 12 ticks
+  (undefined when <50% are detected);
 - restricted mean time to detection (RMST) through 12 ticks;
 - absolute recall and false-alarm summaries.
 
@@ -642,18 +642,22 @@ def markdown(summary: dict) -> str:
         "## Interpretation",
         "",
         (
-            "Stage 21 dominates Stage 20 not only under the single "
-            "horizon-penalized mean. Its cumulative detection curve is higher "
-            "throughout the episode horizon, its final recall is higher, and "
-            "its median observed detection delay is lower. Therefore the "
-            "conclusion is not an artifact of choosing one miss penalty."
+            "Stage 21 dominates Stage 20 beyond the single horizon-penalized "
+            "mean. The two methods are approximately tied at tick 0, after "
+            "which the Stage-21 cumulative detection curve is higher at every "
+            "reported tick; Stage 21 reaches 50% cumulative detection by tick "
+            "6, while Stage 20 never reaches an administrative median within "
+            "the 12-tick horizon. Therefore the main conclusion is not an "
+            "artifact of choosing one miss penalty."
         ),
         (
-            "Median delay among detected attacks must still be interpreted "
-            "together with recall: a weak detector can have a deceptively "
-            "short median by detecting only easy attacks. The cumulative curve "
-            "and RMST avoid that selection problem by retaining misses in the "
-            "analysis."
+            "The detected-only median demonstrates selection bias rather than "
+            "superiority: Stage 20 has a median of 0 ticks among the minority "
+            "of attacks it detects, whereas Stage 21 has a median of 6 ticks "
+            "while detecting every primary attack. The detected-only median "
+            "must therefore never be compared without recall. The cumulative "
+            "curve, administrative median, and RMST retain missed attacks in "
+            "the analysis and are the appropriate primary timing summaries."
         ),
     ]
     return "\n".join(lines)
