@@ -149,3 +149,58 @@ hyperparameter search or fallback selection.
 
 A final failure will be retained as a failure.  Live Stage-19 Open5GS testing
 is justified only after this untouched synthetic result is inspected.
+
+
+## Untouched synthetic final result
+
+The frozen final workflow ran once on **200 previously unopened worlds,
+seeds 10001..10200**, in GitHub Actions run **38141214150**.  Eighteen Stage-19
+tests passed before the final block executed.
+
+| Detector | Overall recall | Sparse recall | Persistent recall | Delay (ticks) | Sparse delay | FA / 1000 clean |
+|---|---:|---:|---:|---:|---:|---:|
+| **Tri-Path directional** | **0.795** | **0.728** | **0.928** | **10.07** | **11.62** | **1.354** |
+| Single-scale directional | 0.287 | 0.006 | 0.848 | 17.14 | 17.95 | 0.625 |
+| Page-Hinkley | 0.203 | 0.046 | 0.515 | 15.30 | 17.56 | **0.469** |
+
+Paired Tri-Path minus tuned single-scale effects:
+
+- overall recall: **+0.508**, 95% paired seed-bootstrap CI
+  **[+0.488, +0.527]**;
+- sparse recall: **+0.722**, CI **[+0.693, +0.749]**;
+- persistent recall: **+0.081**, CI **[+0.065, +0.098]**;
+- horizon-penalized delay: **-7.075 ticks**, CI
+  **[-7.367, -6.771]**;
+- sparse horizon-penalized delay: **-6.333 ticks**, CI
+  **[-6.634, -6.037]**;
+- false alarms / 1000 clean ticks: **+0.729**, CI
+  **[+0.469, +1.016]**.
+
+Per-family Tri-Path recall was:
+
+- persistent positive: 0.905
+- persistent negative: 0.951
+- isolated sparse positive: 0.777
+- isolated sparse negative: 0.782
+- clustered sparse positive: 0.699
+- clustered sparse negative: 0.654
+
+### Final decision
+
+Stage 19 is a **partial scientific success but a failed final gate**.
+
+The architectural goal of recovering sparse detection generalized strongly to
+untouched data, and persistent detection also improved.  However the
+preregistered false-alarm ceiling was <=0.50 / 1000 clean ticks, while the
+frozen Tri-Path detector produced **1.354 / 1000**.
+
+Therefore:
+
+- seeds 10001..10200 are now evaluation data and will not be used for tuning;
+- the Tri-Path thresholds will not be adjusted against this final block;
+- no Stage-19 live Open5GS experiment is launched;
+- the next stage must address **false-alarm robustness under environment
+  variation**, while preserving the sparse-recall gain.
+
+The raw final artifact is `stage19-untouched-synthetic-final`, artifact
+**11702831649**.
