@@ -11,7 +11,7 @@ from research.stage14_native_scp import (
 
 class NativeSCPProtocolTests(unittest.TestCase):
     def test_routing_scope_uses_real_3gpp_target_header(self):
-        self.assertIn("stage14-scp-compose.yaml",COMPOSE)
+        self.assertIn("live/stage14-scp-compose.yaml",COMPOSE)
         self.assertEqual(NATIVE_PROBES,12)
         self.assertTrue(NRF_PATH.startswith("/nnrf-disc/v1/nf-instances"))
         self.assertTrue(NSSF_PATH.startswith("/nnssf-nsselection/v1/"))
