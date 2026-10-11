@@ -569,3 +569,180 @@ ROBUST_SINGLE_WINDOW_SCAN_GRID = tuple(
     for min_hits in (2, 3)
     for threshold in (1.6, 2.2, 2.8, 3.4)
 )
+
+
+@dataclass(frozen=True)
+class AdaptiveRobustSparseEScanConfig:
+    """Sparse e-scan with clipped online robust location/scale adaptation."""
+
+    windows: tuple[int, ...]
+    tail_gate_p: float
+    magnitude_gate_z: float
+    min_hits: int
+    e_sum_threshold: float
+    center_alpha: float
+    scale_alpha: float
+    update_clip_z: float = 3.0
+
+
+class AdaptiveRobustSparseEScanDetector:
+    """Sparse directional scan on adaptively standardized signed residuals."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: AdaptiveRobustSparseEScanConfig,
+    ):
+        self.config = config
+        self.center, self.scale = robust_center_scale(
+            calibration
+        )
+        self.initial_scale = self.scale
+        self.calibration_z = [
+            (value - self.center) / self.scale
+            for value in calibration
+        ]
+        self.positive_hits: list[tuple[int, float]] = []
+        self.negative_hits: list[tuple[int, float]] = []
+        self.tick = -1
+
+    def _update_baseline(self, residual: float):
+        cap = self.config.update_clip_z * self.scale
+        clipped = max(-cap, min(cap, residual))
+        self.center += self.config.center_alpha * clipped
+
+        # For a centered Gaussian, E|X| = sigma*sqrt(2/pi).
+        target_scale = 1.2533141373 * abs(clipped)
+        floor = 0.45 * self.initial_scale
+        ceiling = 4.0 * self.initial_scale
+        target_scale = max(
+            floor, min(ceiling, target_scale)
+        )
+        self.scale = (
+            (1.0 - self.config.scale_alpha) * self.scale
+            + self.config.scale_alpha * target_scale
+        )
+        self.scale = max(floor, min(ceiling, self.scale))
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+        residual = value - self.center
+        z = residual / max(1e-12, self.scale)
+        p_positive = upper_tail_rank(
+            self.calibration_z, z
+        )
+        p_negative = lower_tail_rank(
+            self.calibration_z, z
+        )
+
+        max_window = max(self.config.windows)
+        floor = self.tick - max_window + 1
+        self.positive_hits = [
+            item for item in self.positive_hits if item[0] >= floor
+        ]
+        self.negative_hits = [
+            item for item in self.negative_hits if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= self.config.tail_gate_p
+            and z >= self.config.magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= self.config.tail_gate_p
+            and z <= -self.config.magnitude_gate_z
+        )
+        if positive_hit:
+            self.positive_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_positive)))
+            )
+        if negative_hit:
+            self.negative_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_negative)))
+            )
+
+        positive_alarm = False
+        negative_alarm = False
+        for hits, direction in (
+            (self.positive_hits, "positive"),
+            (self.negative_hits, "negative"),
+        ):
+            passed = False
+            for window in self.config.windows:
+                window_floor = self.tick - window + 1
+                values = [
+                    evidence
+                    for hit_tick, evidence in hits
+                    if hit_tick >= window_floor
+                ]
+                passed = passed or (
+                    len(values) >= self.config.min_hits
+                    and sum(values)
+                    >= self.config.e_sum_threshold
+                )
+            if direction == "positive":
+                positive_alarm = passed
+            else:
+                negative_alarm = passed
+
+        alarm = (
+            (positive_hit or negative_hit)
+            and (positive_alarm or negative_alarm)
+        )
+        if alarm:
+            self.positive_hits = []
+            self.negative_hits = []
+
+        # Adapt after scoring. Clipping limits attack contamination.
+        self._update_baseline(residual)
+
+        return alarm, {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "robust_z": z,
+            "center": self.center,
+            "scale": self.scale,
+        }
+
+
+ADAPTATION_PAIRS = (
+    (0.03, 0.02),
+    (0.08, 0.04),
+    (0.15, 0.06),
+)
+
+ADAPTIVE_ROBUST_SCAN_GRID = tuple(
+    AdaptiveRobustSparseEScanConfig(
+        windows=windows,
+        tail_gate_p=gate,
+        magnitude_gate_z=z_gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+        center_alpha=center_alpha,
+        scale_alpha=scale_alpha,
+    )
+    for windows in SPARSE_SCAN_BANKS
+    for gate in (0.04, 0.07)
+    for z_gate in (3.5, 4.5)
+    for min_hits in (2, 3)
+    for threshold in (2.2, 2.8, 3.4)
+    for center_alpha, scale_alpha in ADAPTATION_PAIRS
+)
+
+ADAPTIVE_ROBUST_SINGLE_WINDOW_GRID = tuple(
+    AdaptiveRobustSparseEScanConfig(
+        windows=(window,),
+        tail_gate_p=gate,
+        magnitude_gate_z=z_gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+        center_alpha=center_alpha,
+        scale_alpha=scale_alpha,
+    )
+    for window in (12, 18, 24, 36)
+    for gate in (0.04, 0.07)
+    for z_gate in (3.5, 4.5)
+    for min_hits in (2, 3)
+    for threshold in (2.2, 2.8, 3.4)
+    for center_alpha, scale_alpha in ADAPTATION_PAIRS
+)
