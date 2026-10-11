@@ -161,18 +161,17 @@ class MultiscaleDirectionalState:
 
 MULTISCALE_GRID = tuple(
     MultiscaleDirectionalConfig(
-        fast_decay=fast_decay,
-        fast_reference=fast_reference,
-        fast_threshold=fast_threshold,
+        # Preserve the Stage-17 fast channel exactly; tune only the new
+        # sparse-evidence memory.
+        fast_decay=0.90,
+        fast_reference=0.12,
+        fast_threshold=5.0,
         slow_decay=slow_decay,
         slow_reference=slow_reference,
         slow_threshold=slow_threshold,
         direction_gate_p=gate,
         slow_update_gate_p=slow_gate,
     )
-    for fast_decay in (0.85, 0.90)
-    for fast_reference in (0.08, 0.12)
-    for fast_threshold in (4.0, 5.0, 6.0)
     for slow_decay in (0.96, 0.98, 0.995)
     for slow_reference in (0.00, 0.03, 0.06)
     for slow_threshold in (2.5, 3.5, 4.5, 6.0)
