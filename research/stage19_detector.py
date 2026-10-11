@@ -273,3 +273,149 @@ PAGE_HINKLEY_GRID = tuple(
     for gate in (0.04, 0.08, 0.12)
     for alpha in (0.05, 0.10, 0.20)
 )
+
+
+@dataclass(frozen=True)
+class SparseEScanConfig:
+    """Multi-window directional scan over extreme one-sided e-evidence."""
+
+    windows: tuple[int, ...]
+    tail_gate_p: float
+    min_hits: int
+    e_sum_threshold: float
+
+
+class SparseEScanDetector:
+    """Detect repeated sparse directional tail evidence in rolling windows.
+
+    Only observations whose one-sided p-value passes the tail gate enter the
+    evidence buffer. An alarm requires multiple same-direction tail hits in at
+    least one declared window and sufficient summed positive log-evidence.
+    Single clean outliers therefore cannot alarm by themselves.
+
+    Multiple windows make the detector insensitive to one assumed pulse gap:
+    short windows react quickly to dense attacks while long windows retain
+    sparse evidence.
+    """
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: SparseEScanConfig,
+    ):
+        self.calibration = list(calibration)
+        self.config = config
+        self.positive_hits: list[tuple[int, float]] = []
+        self.negative_hits: list[tuple[int, float]] = []
+        self.tick = -1
+
+    def _scan(
+        self,
+        hits: list[tuple[int, float]],
+    ) -> tuple[bool, dict]:
+        stats = {}
+        alarm = False
+        for window in self.config.windows:
+            floor = self.tick - window + 1
+            values = [
+                value
+                for tick, value in hits
+                if tick >= floor
+            ]
+            total = sum(values)
+            stats[str(window)] = {
+                "hits": len(values),
+                "log_e_sum": total,
+            }
+            if (
+                len(values) >= self.config.min_hits
+                and total >= self.config.e_sum_threshold
+            ):
+                alarm = True
+        return alarm, stats
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+        p_positive = upper_tail_rank(
+            self.calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.calibration, value
+        )
+
+        max_window = max(self.config.windows)
+        floor = self.tick - max_window + 1
+        self.positive_hits = [
+            item for item in self.positive_hits if item[0] >= floor
+        ]
+        self.negative_hits = [
+            item for item in self.negative_hits if item[0] >= floor
+        ]
+
+        if p_positive <= self.config.tail_gate_p:
+            self.positive_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_positive)))
+            )
+        if p_negative <= self.config.tail_gate_p:
+            self.negative_hits.append(
+                (self.tick, max(0.0, log_e_from_p(p_negative)))
+            )
+
+        positive_alarm, positive_stats = self._scan(
+            self.positive_hits
+        )
+        negative_alarm, negative_stats = self._scan(
+            self.negative_hits
+        )
+
+        current_tail = (
+            p_positive <= self.config.tail_gate_p
+            or p_negative <= self.config.tail_gate_p
+        )
+        alarm = current_tail and (
+            positive_alarm or negative_alarm
+        )
+        if alarm:
+            self.positive_hits = []
+            self.negative_hits = []
+
+        return alarm, {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "positive_windows": positive_stats,
+            "negative_windows": negative_stats,
+        }
+
+
+SPARSE_SCAN_BANKS = (
+    (8, 16, 32),
+    (12, 24, 48),
+    (8, 20, 40),
+    (16, 32, 64),
+)
+
+SPARSE_SCAN_GRID = tuple(
+    SparseEScanConfig(
+        windows=windows,
+        tail_gate_p=gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+    )
+    for windows in SPARSE_SCAN_BANKS
+    for gate in (0.04, 0.07, 0.10)
+    for min_hits in (2, 3)
+    for threshold in (1.2, 1.6, 2.0, 2.6, 3.2)
+)
+
+SINGLE_WINDOW_SCAN_GRID = tuple(
+    SparseEScanConfig(
+        windows=(window,),
+        tail_gate_p=gate,
+        min_hits=min_hits,
+        e_sum_threshold=threshold,
+    )
+    for window in (12, 18, 24, 36)
+    for gate in (0.04, 0.07, 0.10)
+    for min_hits in (2, 3)
+    for threshold in (1.2, 1.6, 2.0, 2.6, 3.2)
+)
