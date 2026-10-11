@@ -364,3 +364,116 @@ E_CONFIRMED_PAGE_GRID = tuple(
     for decay in (0.50, 0.70, 0.85)
     for e_threshold in (0.35, 0.70, 1.10, 1.60)
 )
+
+
+@dataclass(frozen=True)
+class DirectionalEConfig:
+    """Two-sided directional log-e accumulation configuration."""
+
+    decay: float
+    reference: float
+    threshold: float
+    direction_gate_p: float
+
+
+def signed_discrepancy(sample) -> float:
+    """Signed NF-report minus trusted-transit discrepancy."""
+    return (
+        sample.reported - sample.transit
+    ) / max(1, sample.transit)
+
+
+def lower_tail_rank(calibration: list[float], value: float) -> float:
+    return (
+        1 + sum(item <= value for item in calibration)
+    ) / (len(calibration) + 1)
+
+
+class DirectionalEProcessDetector(CalibratedSurprise):
+    """Accumulate one-sided e-evidence separately for over/under-reporting.
+
+    Absolute-discrepancy detectors discard attack direction. Here the positive
+    and negative tails have independent sequential states. Symmetric clean
+    observer noise tends to alternate direction, while a persistent attack
+    repeatedly feeds the same state.
+    """
+
+    def __init__(self, world, config: DirectionalEConfig):
+        super().__init__(world)
+        self.config = config
+        self.positive = [0.0] * N_NF
+        self.negative = [0.0] * N_NF
+
+        self.signed_calibration = []
+        from .stage15_simulation import WARMUP, STEP_SECONDS
+        from .stage16_simulation import fixed_schedule
+
+        for tick, row in enumerate(
+            world.samples[: WARMUP // STEP_SECONDS]
+        ):
+            for nf in fixed_schedule(tick):
+                self.signed_calibration.append(
+                    signed_discrepancy(row[nf])
+                )
+
+    def observe(
+        self,
+        nf: int,
+        sample,
+        hierarchical_risk: float,
+    ) -> bool:
+        value = signed_discrepancy(sample)
+        p_positive = upper_tail_rank(
+            self.signed_calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.signed_calibration, value
+        )
+
+        log_e_positive = math.log(
+            max(1e-12, power_betting_mixture(p_positive))
+        )
+        log_e_negative = math.log(
+            max(1e-12, power_betting_mixture(p_negative))
+        )
+
+        self.positive[nf] = max(
+            0.0,
+            self.config.decay * self.positive[nf]
+            + log_e_positive
+            - self.config.reference,
+        )
+        self.negative[nf] = max(
+            0.0,
+            self.config.decay * self.negative[nf]
+            + log_e_negative
+            - self.config.reference,
+        )
+
+        positive_alarm = (
+            self.positive[nf] >= self.config.threshold
+            and p_positive <= self.config.direction_gate_p
+        )
+        negative_alarm = (
+            self.negative[nf] >= self.config.threshold
+            and p_negative <= self.config.direction_gate_p
+        )
+        alarm = positive_alarm or negative_alarm
+        if alarm:
+            self.positive[nf] = 0.0
+            self.negative[nf] = 0.0
+        return alarm
+
+
+DIRECTIONAL_E_GRID = tuple(
+    DirectionalEConfig(
+        decay=decay,
+        reference=reference,
+        threshold=threshold,
+        direction_gate_p=gate,
+    )
+    for decay in (0.80, 0.90, 0.97, 1.00)
+    for reference in (0.00, 0.05, 0.12, 0.22)
+    for threshold in (1.5, 2.5, 3.5, 5.0, 7.0)
+    for gate in (0.03, 0.06, 0.10)
+)
