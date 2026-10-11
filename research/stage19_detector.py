@@ -1168,3 +1168,100 @@ SPARSE_PLUS_DIRECTIONAL_GRID = tuple(
     for threshold in (7.0, 9.0, 11.0)
     for single_gate in (0.04, 0.07)
 )
+
+
+@dataclass(frozen=True)
+class RawSustainedConfig:
+    """Short-window same-direction moderate-residual detector."""
+
+    window: int
+    hits: int
+    magnitude_gate_z: float
+    tail_gate_p: float
+
+
+class RawSustainedDirectionalDetector:
+    """Detect persistent signed shifts using fixed warm-up robust scale."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: RawSustainedConfig,
+    ):
+        self.config = config
+        self.center, self.scale = robust_center_scale(calibration)
+        self.calibration_z = [
+            (value - self.center) / self.scale
+            for value in calibration
+        ]
+        self.positive_hits: list[int] = []
+        self.negative_hits: list[int] = []
+        self.tick = -1
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+        z = (value - self.center) / self.scale
+        p_positive = upper_tail_rank(self.calibration_z, z)
+        p_negative = lower_tail_rank(self.calibration_z, z)
+
+        floor = self.tick - self.config.window + 1
+        self.positive_hits = [
+            tick for tick in self.positive_hits if tick >= floor
+        ]
+        self.negative_hits = [
+            tick for tick in self.negative_hits if tick >= floor
+        ]
+
+        positive_hit = (
+            z >= self.config.magnitude_gate_z
+            and p_positive <= self.config.tail_gate_p
+        )
+        negative_hit = (
+            z <= -self.config.magnitude_gate_z
+            and p_negative <= self.config.tail_gate_p
+        )
+
+        if positive_hit:
+            self.positive_hits.append(self.tick)
+            # Opposite-direction accumulation cannot survive a strong hit.
+            self.negative_hits = []
+        elif negative_hit:
+            self.negative_hits.append(self.tick)
+            self.positive_hits = []
+
+        alarm = (
+            positive_hit
+            and len(self.positive_hits) >= self.config.hits
+        ) or (
+            negative_hit
+            and len(self.negative_hits) >= self.config.hits
+        )
+        if alarm:
+            self.positive_hits = []
+            self.negative_hits = []
+
+        return alarm, {
+            "robust_z": z,
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+        }
+
+
+RAW_SUSTAINED_GRID = tuple(
+    RawSustainedConfig(
+        window=window,
+        hits=hits,
+        magnitude_gate_z=z_gate,
+        tail_gate_p=p_gate,
+    )
+    for window, hits in (
+        (4, 3),
+        (5, 4),
+        (6, 4),
+        (8, 5),
+        (10, 6),
+        (12, 7),
+    )
+    for z_gate in (1.2, 1.5, 1.8, 2.2, 2.6)
+    for p_gate in (0.15, 0.25, 0.35)
+)
