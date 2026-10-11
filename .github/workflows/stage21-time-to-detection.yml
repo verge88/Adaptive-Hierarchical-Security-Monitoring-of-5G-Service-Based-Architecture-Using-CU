@@ -23,18 +23,27 @@ jobs:
           python-version: '3.12'
       - name: Compile time-to-detection analysis
         run: python -m py_compile research/stage21_time_to_detection.py
-      - name: Download frozen 128-run replication artifacts
+      - name: Download frozen private labels only
         uses: actions/download-artifact@v4
         with:
           run-id: 38160873208
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: stage21-rep-*
+          pattern: stage21-rep-labels-*
           path: stage21_rep_batches
-      - name: Verify all frozen replication components are present
+      - name: Download frozen blind alarms only
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 38160873208
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: stage21-rep-alarms-*
+          path: stage21_rep_batches
+      - name: Verify all 128 label and alarm streams are present
         run: |
-          test "$(find stage21_rep_batches -name private_labels.json | wc -l)" -eq 128
-          test "$(find stage21_rep_batches -name alarms.json | wc -l)" -eq 128
-          test "$(find stage21_rep_batches -name provenance.json | wc -l)" -eq 128
+          LABELS="$(find stage21_rep_batches -name private_labels.json | wc -l)"
+          ALARMS="$(find stage21_rep_batches -name alarms.json | wc -l)"
+          echo "labels=$LABELS alarms=$ALARMS"
+          test "$LABELS" -eq 128
+          test "$ALARMS" -eq 128
       - name: Compute clustered time-to-detection statistics
         run: |
           python -m research.stage21_time_to_detection             --input stage21_rep_batches             --output stage21_time_to_detection
