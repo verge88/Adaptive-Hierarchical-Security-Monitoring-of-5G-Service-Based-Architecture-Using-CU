@@ -26,7 +26,12 @@ from .stage15_detector import power_betting_mixture, upper_tail_rank
 from .stage15_simulation import N_NF, STEP_SECONDS, WARMUP
 from .stage16_detectors import CalibratedSurprise, PageHinkleyConfig
 from .stage16_simulation import WorldOOD, fixed_schedule
-from .stage17_detector import (\n    ADAPTIVE_EPAGE_GRID,\n    E_ASSISTED_PAGE_GRID,\n    AdaptiveEPageConfig,\n    EAssistedPageConfig,\n)
+from .stage17_detector import (
+    ADAPTIVE_EPAGE_GRID,
+    E_ASSISTED_PAGE_GRID,
+    AdaptiveEPageConfig,
+    EAssistedPageConfig,
+)
 
 DEV_START_SEED = 6001
 DEV_SEEDS = 40
