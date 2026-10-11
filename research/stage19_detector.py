@@ -1265,3 +1265,123 @@ RAW_SUSTAINED_GRID = tuple(
     for z_gate in (1.2, 1.5, 1.8, 2.2, 2.6)
     for p_gate in (0.15, 0.25, 0.35)
 )
+
+
+@dataclass(frozen=True)
+class AdaptiveConsecutiveConfig:
+    """Adaptive robust short-window directional confirmation."""
+
+    window: int
+    hits: int
+    magnitude_gate_z: float
+    tail_gate_p: float
+    center_alpha: float
+    scale_alpha: float
+    update_clip_z: float = 3.0
+
+
+class AdaptiveConsecutiveDirectionalDetector:
+    """Detect short same-sign innovation clusters before baseline adaptation."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: AdaptiveConsecutiveConfig,
+    ):
+        self.config = config
+        self.center, self.scale = robust_center_scale(calibration)
+        self.initial_scale = self.scale
+        self.calibration_z = [
+            (value - self.center) / self.scale
+            for value in calibration
+        ]
+        self.positive_hits: list[int] = []
+        self.negative_hits: list[int] = []
+        self.tick = -1
+
+    def _update(self, residual: float):
+        cap = self.config.update_clip_z * self.scale
+        clipped = max(-cap, min(cap, residual))
+        self.center += self.config.center_alpha * clipped
+        target = 1.2533141373 * abs(clipped)
+        floor = 0.45 * self.initial_scale
+        ceiling = 4.0 * self.initial_scale
+        target = max(floor, min(ceiling, target))
+        self.scale = (
+            (1.0 - self.config.scale_alpha) * self.scale
+            + self.config.scale_alpha * target
+        )
+        self.scale = max(floor, min(ceiling, self.scale))
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+        residual = value - self.center
+        z = residual / max(1e-12, self.scale)
+        p_positive = upper_tail_rank(self.calibration_z, z)
+        p_negative = lower_tail_rank(self.calibration_z, z)
+
+        floor = self.tick - self.config.window + 1
+        self.positive_hits = [
+            tick for tick in self.positive_hits if tick >= floor
+        ]
+        self.negative_hits = [
+            tick for tick in self.negative_hits if tick >= floor
+        ]
+
+        positive_hit = (
+            z >= self.config.magnitude_gate_z
+            and p_positive <= self.config.tail_gate_p
+        )
+        negative_hit = (
+            z <= -self.config.magnitude_gate_z
+            and p_negative <= self.config.tail_gate_p
+        )
+        if positive_hit:
+            self.positive_hits.append(self.tick)
+            self.negative_hits = []
+        elif negative_hit:
+            self.negative_hits.append(self.tick)
+            self.positive_hits = []
+
+        alarm = (
+            positive_hit
+            and len(self.positive_hits) >= self.config.hits
+        ) or (
+            negative_hit
+            and len(self.negative_hits) >= self.config.hits
+        )
+        if alarm:
+            self.positive_hits = []
+            self.negative_hits = []
+
+        self._update(residual)
+
+        return alarm, {
+            "robust_z": z,
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+        }
+
+
+CONSECUTIVE_PATTERNS = (
+    (2, 2),
+    (3, 2),
+    (4, 2),
+    (4, 3),
+    (5, 3),
+)
+
+ADAPTIVE_CONSECUTIVE_GRID = tuple(
+    AdaptiveConsecutiveConfig(
+        window=window,
+        hits=hits,
+        magnitude_gate_z=z_gate,
+        tail_gate_p=p_gate,
+        center_alpha=center_alpha,
+        scale_alpha=scale_alpha,
+    )
+    for window, hits in CONSECUTIVE_PATTERNS
+    for z_gate in (1.8, 2.2, 2.6, 3.0, 3.5)
+    for p_gate in (0.07, 0.10, 0.15)
+    for center_alpha, scale_alpha in ADAPTATION_PAIRS
+)
