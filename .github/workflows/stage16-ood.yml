@@ -2,7 +2,7 @@ name: Stage16 OOD sequential benchmark
 
 on:
   push:
-    branches: ['experiment/stage16-ood-sequential-benchmark']
+    branches: ['stage16/ood-sequential-benchmark']
   pull_request:
     paths:
       - 'research/stage16_*.py'
