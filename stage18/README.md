@@ -91,3 +91,54 @@ It would **not** establish:
 The next stronger gate would require either an instrumented trusted observer at
 the native SCP boundary or a controlled Open5GS fault-injection build whose
 attack process remains independently orchestrated.
+
+
+## Verified live result
+
+The live capture itself was frozen in GitHub Actions run **38138615643** before
+blind detector processing. All six Open5GS runners completed successfully and
+uploaded telemetry and private labels as separate artifacts.
+
+A path-only postprocessing bug initially prevented the detector from locating
+`telemetry.json`. No detector metrics were produced by that failed attempt.
+The fixed postprocess workflow reused the exact capture artifacts from run
+38138615643 rather than re-capturing traffic.
+
+Blind postprocessing run **38138724214** completed successfully.
+
+Across six independent hosted Open5GS runners (seeds 8101..8106):
+
+| Detector | Event recall | Horizon-penalized delay (ticks) | FA / 1000 clean ticks |
+|---|---:|---:|---:|
+| Page-Hinkley (Stage-17 frozen) | 0.333 | **9.62** | 0.000 |
+| **Directional e-process (Stage-17 frozen)** | **0.500** | 10.00 | 0.000 |
+
+Paired runner-level effect, directional minus Page-Hinkley:
+
+- event recall: **+0.167**, 95% runner-cluster bootstrap CI
+  **[+0.097, +0.222]**;
+- horizon-penalized delay: **+0.37 ticks**, 95% CI
+  **[-0.06, +0.85]**;
+- false alarms / 1000 clean ticks: **0.000** for both.
+
+Per-family recall:
+
+| Fault family | Page-Hinkley | Directional e-process |
+|---|---:|---:|
+| profile_drop | 0.722 | **1.000** |
+| profile_duplicate | 0.611 | **1.000** |
+| metadata_strip_sparse | 0.000 | 0.000 |
+| padding_sparse | 0.000 | 0.000 |
+
+### Interpretation
+
+The directional mechanism therefore transfers to real HTTP/2 traffic through
+native Open5GS SCP/NRF for **persistent signed response tampering** and improves
+event recall without increasing false alarms.
+
+Stage 18 does **not** demonstrate a delay improvement: the runner-cluster CI
+crosses zero. More importantly, both frozen detectors completely miss the sparse
+live mutation families. The next detector iteration should target sparse
+evidence accumulation while preserving the blind capture/evaluation split; the
+Stage-18 live artifacts must now be treated as evaluation data and must not be
+used for tuning.
