@@ -1,0 +1,45 @@
+name: Stage19 untouched synthetic final
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_final.py'
+      - 'research/stage19_frozen.py'
+      - 'stage19_tests/**'
+      - 'stage19/**'
+      - '.github/workflows/stage19-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Stage19
+        run: python -m compileall -q research stage19_tests
+      - name: Run Stage19 invariants and frozen-protocol tests
+        run: python -m unittest discover -s stage19_tests -v
+      - name: Run the single predeclared untouched final block
+        run: |
+          python -m research.stage19_final \
+            --start-seed 10001 \
+            --seeds 200 \
+            --output stage19_final_results
+      - name: Publish untouched final report
+        run: cat stage19_final_results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw untouched final results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-untouched-synthetic-final
+          path: stage19_final_results/
+          if-no-files-found: warn
+          retention-days: 90

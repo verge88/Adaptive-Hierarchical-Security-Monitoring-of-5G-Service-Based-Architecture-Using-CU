@@ -1,0 +1,33 @@
+name: Stage19 Pareto ensemble selection
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_ensemble_select.py'
+      - '.github/workflows/stage19-ensemble.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m compileall -q research
+      - name: Allocate FA budget across existing development channels
+        run: python -m research.stage19_ensemble_select --output stage19_ensemble_selection.json
+      - name: Publish ensemble selection
+        run: cat stage19_ensemble_selection.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage19-ensemble-selection
+          path: stage19_ensemble_selection.json
+          retention-days: 30

@@ -1,0 +1,33 @@
+name: Stage19 three-path development probe
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_three_path_probe.py'
+      - '.github/workflows/stage19-three-path.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m compileall -q research
+      - name: Evaluate selected-channel union on development block
+        run: python -m research.stage19_three_path_probe --output stage19_three_path_probe.json
+      - name: Publish probe
+        run: cat stage19_three_path_probe.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage19-three-path-probe
+          path: stage19_three_path_probe.json
+          retention-days: 30

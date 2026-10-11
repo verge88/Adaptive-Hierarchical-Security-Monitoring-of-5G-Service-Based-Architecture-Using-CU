@@ -1,0 +1,42 @@
+name: Stage19 sparse-e development
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_*.py'
+      - 'stage19/**'
+      - 'stage19_tests/**'
+      - '.github/workflows/stage19-development.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax and development invariants
+        run: |
+          python -m compileall -q research stage19_tests
+          python -m unittest discover -s stage19_tests -v
+      - name: Tune multiscale and strong comparators on fresh development block
+        run: |
+          python -m research.stage19_develop \
+            --start-seed 9001 \
+            --seeds 40 \
+            --output stage19_development.json
+      - name: Publish development summary
+        run: cat stage19_development.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload development selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-development
+          path: stage19_development.json
+          retention-days: 30

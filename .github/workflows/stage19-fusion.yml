@@ -1,0 +1,35 @@
+name: Stage19 fast fusion selection
+
+on:
+  push:
+    branches: ['stage19/multiscale-sparse-e']
+    paths:
+      - 'research/stage19_fusion_select.py'
+      - 'research/stage19_detector.py'
+      - 'research/stage19_develop.py'
+      - '.github/workflows/stage19-fusion.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m compileall -q research
+      - name: Select sparse-plus-directional fusion on development block
+        run: python -m research.stage19_fusion_select --output stage19_fusion_selection.json
+      - name: Publish selection
+        run: cat stage19_fusion_selection.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage19-fusion-selection
+          path: stage19_fusion_selection.json
+          retention-days: 30
