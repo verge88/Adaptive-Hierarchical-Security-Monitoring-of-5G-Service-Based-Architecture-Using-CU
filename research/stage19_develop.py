@@ -36,11 +36,14 @@ from .stage19_detector import (
     SINGLE_WINDOW_SCAN_GRID,
     ROBUST_SPARSE_SCAN_GRID,
     ROBUST_SINGLE_WINDOW_SCAN_GRID,
+    ADAPTIVE_ROBUST_SCAN_GRID,
+    ADAPTIVE_ROBUST_SINGLE_WINDOW_GRID,
     MultiScaleDirectionalConfig,
     ScalarPageHinkleyConfig,
     SingleScaleDirectionalConfig,
     SparseEScanConfig,
     RobustSparseEScanConfig,
+    AdaptiveRobustSparseEScanConfig,
     log_mean_exp,
     lower_tail_rank,
     robust_center_scale,
@@ -439,6 +442,128 @@ def evaluate_robust_sparse_scan(world, prepared, config):
     )
 
 
+def evaluate_adaptive_robust_sparse_scan(
+    world, prepared, config
+):
+    center, scale = robust_center_scale(
+        prepared["calibration"]
+    )
+    initial_scale = scale
+    calibration_z = [
+        (value - center) / scale
+        for value in prepared["calibration"]
+    ]
+    positive_hits = []
+    negative_hits = []
+    alerts = set()
+    clean = clean_tick_set(world)
+    false = 0
+
+    for tick in range(WARMUP_TICKS, world.total_ticks):
+        value = world.values[tick]
+        residual = value - center
+        z = residual / max(1e-12, scale)
+        p_positive = upper_tail_rank(calibration_z, z)
+        p_negative = lower_tail_rank(calibration_z, z)
+        log_positive = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_positive),
+            )
+        )
+        log_negative = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_negative),
+            )
+        )
+
+        max_window = max(config.windows)
+        floor = tick - max_window + 1
+        positive_hits = [
+            item for item in positive_hits
+            if item[0] >= floor
+        ]
+        negative_hits = [
+            item for item in negative_hits
+            if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= config.tail_gate_p
+            and z >= config.magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= config.tail_gate_p
+            and z <= -config.magnitude_gate_z
+        )
+        if positive_hit:
+            positive_hits.append(
+                (tick, max(0.0, log_positive))
+            )
+        if negative_hit:
+            negative_hits.append(
+                (tick, max(0.0, log_negative))
+            )
+
+        positive_alarm = False
+        negative_alarm = False
+        for window in config.windows:
+            window_floor = tick - window + 1
+            positive_values = [
+                evidence
+                for hit_tick, evidence in positive_hits
+                if hit_tick >= window_floor
+            ]
+            negative_values = [
+                evidence
+                for hit_tick, evidence in negative_hits
+                if hit_tick >= window_floor
+            ]
+            positive_alarm = positive_alarm or (
+                len(positive_values) >= config.min_hits
+                and sum(positive_values)
+                >= config.e_sum_threshold
+            )
+            negative_alarm = negative_alarm or (
+                len(negative_values) >= config.min_hits
+                and sum(negative_values)
+                >= config.e_sum_threshold
+            )
+
+        alarm = (
+            (positive_hit or negative_hit)
+            and (positive_alarm or negative_alarm)
+        )
+        if alarm:
+            alerts.add(tick)
+            false += int(tick in clean)
+            positive_hits = []
+            negative_hits = []
+
+        cap = config.update_clip_z * scale
+        clipped = max(-cap, min(cap, residual))
+        center += config.center_alpha * clipped
+        target_scale = 1.2533141373 * abs(clipped)
+        scale_floor = 0.45 * initial_scale
+        scale_ceiling = 4.0 * initial_scale
+        target_scale = max(
+            scale_floor,
+            min(scale_ceiling, target_scale),
+        )
+        scale = (
+            (1.0 - config.scale_alpha) * scale
+            + config.scale_alpha * target_scale
+        )
+        scale = max(
+            scale_floor, min(scale_ceiling, scale)
+        )
+
+    return event_metrics(
+        world, alerts, false, len(clean)
+    )
+
+
 def evaluate_page_hinkley(world, prepared, config):
     mean = 1.0
     cumulative = 0.0
@@ -585,6 +710,14 @@ def develop(
             ROBUST_SINGLE_WINDOW_SCAN_GRID,
             evaluate_robust_sparse_scan,
         ),
+        "adaptive_robust_sparse_scan_multiscale": (
+            ADAPTIVE_ROBUST_SCAN_GRID,
+            evaluate_adaptive_robust_sparse_scan,
+        ),
+        "adaptive_robust_sparse_scan_single_window": (
+            ADAPTIVE_ROBUST_SINGLE_WINDOW_GRID,
+            evaluate_adaptive_robust_sparse_scan,
+        ),
         "page_hinkley": (
             PAGE_HINKLEY_GRID,
             evaluate_page_hinkley,
@@ -640,6 +773,12 @@ def develop(
     scan_single = output["selected"]["sparse_scan_single_window"]
     robust_multi = output["selected"]["robust_sparse_scan_multiscale"]
     robust_single = output["selected"]["robust_sparse_scan_single_window"]
+    adaptive_multi = output["selected"][
+        "adaptive_robust_sparse_scan_multiscale"
+    ]
+    adaptive_single = output["selected"][
+        "adaptive_robust_sparse_scan_single_window"
+    ]
     output["development_effect_multiscale_minus_single"] = {
         key: multi["summary"][key] - single["summary"][key]
         for key in multi["summary"]
@@ -658,9 +797,16 @@ def develop(
         )
         for key in robust_multi["summary"]
     }
+    output["development_effect_adaptive_scan_multi_minus_single_window"] = {
+        key: (
+            adaptive_multi["summary"][key]
+            - adaptive_single["summary"][key]
+        )
+        for key in adaptive_multi["summary"]
+    }
     output["stage19_candidate"] = {
-        "family": "robust_sparse_scan_multiscale",
-        **robust_multi,
+        "family": "adaptive_robust_sparse_scan_multiscale",
+        **adaptive_multi,
     }
     return output
 
