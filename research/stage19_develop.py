@@ -32,9 +32,12 @@ from .stage19_detector import (
     MULTISCALE_GRID,
     PAGE_HINKLEY_GRID,
     SINGLE_SCALE_GRID,
+    SPARSE_SCAN_GRID,
+    SINGLE_WINDOW_SCAN_GRID,
     MultiScaleDirectionalConfig,
     ScalarPageHinkleyConfig,
     SingleScaleDirectionalConfig,
+    SparseEScanConfig,
     log_mean_exp,
     lower_tail_rank,
 )
@@ -265,6 +268,85 @@ def evaluate_single(world, prepared, config):
     )
 
 
+def evaluate_sparse_scan(world, prepared, config):
+    positive_hits = []
+    negative_hits = []
+    alerts = set()
+    clean = clean_tick_set(world)
+    false = 0
+
+    for (
+        tick,
+        p_positive,
+        p_negative,
+        _,
+        log_positive,
+        log_negative,
+        _,
+    ) in prepared["trace"]:
+        max_window = max(config.windows)
+        floor = tick - max_window + 1
+        positive_hits = [
+            item for item in positive_hits
+            if item[0] >= floor
+        ]
+        negative_hits = [
+            item for item in negative_hits
+            if item[0] >= floor
+        ]
+
+        if p_positive <= config.tail_gate_p:
+            positive_hits.append(
+                (tick, max(0.0, log_positive))
+            )
+        if p_negative <= config.tail_gate_p:
+            negative_hits.append(
+                (tick, max(0.0, log_negative))
+            )
+
+        positive_alarm = False
+        negative_alarm = False
+        for window in config.windows:
+            window_floor = tick - window + 1
+            positive_values = [
+                value
+                for hit_tick, value in positive_hits
+                if hit_tick >= window_floor
+            ]
+            negative_values = [
+                value
+                for hit_tick, value in negative_hits
+                if hit_tick >= window_floor
+            ]
+            positive_alarm = positive_alarm or (
+                len(positive_values) >= config.min_hits
+                and sum(positive_values)
+                >= config.e_sum_threshold
+            )
+            negative_alarm = negative_alarm or (
+                len(negative_values) >= config.min_hits
+                and sum(negative_values)
+                >= config.e_sum_threshold
+            )
+
+        current_tail = (
+            p_positive <= config.tail_gate_p
+            or p_negative <= config.tail_gate_p
+        )
+        alarm = current_tail and (
+            positive_alarm or negative_alarm
+        )
+        if alarm:
+            alerts.add(tick)
+            false += int(tick in clean)
+            positive_hits = []
+            negative_hits = []
+
+    return event_metrics(
+        world, alerts, false, len(clean)
+    )
+
+
 def evaluate_page_hinkley(world, prepared, config):
     mean = 1.0
     cumulative = 0.0
@@ -395,6 +477,14 @@ def develop(
             SINGLE_SCALE_GRID,
             evaluate_single,
         ),
+        "sparse_scan_multiscale": (
+            SPARSE_SCAN_GRID,
+            evaluate_sparse_scan,
+        ),
+        "sparse_scan_single_window": (
+            SINGLE_WINDOW_SCAN_GRID,
+            evaluate_sparse_scan,
+        ),
         "page_hinkley": (
             PAGE_HINKLEY_GRID,
             evaluate_page_hinkley,
@@ -446,9 +536,22 @@ def develop(
 
     multi = output["selected"]["multiscale_directional"]
     single = output["selected"]["single_scale_directional"]
+    scan_multi = output["selected"]["sparse_scan_multiscale"]
+    scan_single = output["selected"]["sparse_scan_single_window"]
     output["development_effect_multiscale_minus_single"] = {
         key: multi["summary"][key] - single["summary"][key]
         for key in multi["summary"]
+    }
+    output["development_effect_sparse_scan_multi_minus_single_window"] = {
+        key: (
+            scan_multi["summary"][key]
+            - scan_single["summary"][key]
+        )
+        for key in scan_multi["summary"]
+    }
+    output["stage19_candidate"] = {
+        "family": "sparse_scan_multiscale",
+        **scan_multi,
     }
     return output
 
