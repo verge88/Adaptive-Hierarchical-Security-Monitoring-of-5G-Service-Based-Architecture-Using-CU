@@ -103,6 +103,27 @@ def projection_mismatch(
     return len(mismatched), token_distance, tuple(mismatched)
 
 
+def mismatch_signature(
+    trusted: dict[str, Counter[str]],
+    consumer: dict[str, Counter[str]],
+    paths: tuple[str, ...],
+) -> str:
+    """Hash the exact stable-path transition without exposing raw values."""
+    if not paths:
+        return ""
+    payload = []
+    for path in paths:
+        payload.append(
+            (
+                path,
+                sorted(trusted.get(path, Counter()).items()),
+                sorted(consumer.get(path, Counter()).items()),
+            )
+        )
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=False)
+    return hashlib.sha256(raw.encode("utf8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class SemanticQuorumConfig:
     paired_agreement_threshold: float
@@ -171,7 +192,7 @@ class SemanticQuorumState:
         self.temporal_stability = temporal
         self.selected_paths = tuple(selected)
         self.enabled = bool(self.selected_paths)
-        self.hit_ages: list[int] = []
+        self.signature_ages: dict[str, list[int]] = {}
         self.recovery_remaining = 0
 
     def observe(
@@ -184,12 +205,14 @@ class SemanticQuorumState:
             consumer,
             self.selected_paths,
         )
+        signature = mismatch_signature(
+            trusted, consumer, paths
+        )
 
-        # After an alarm, do not let residual attack pulses seed a second
-        # quorum that can spill into a clean gap. Recovery ends only after a
-        # configured number of exact paired matches in succession.
+        # After an alarm, residual attack pulses cannot seed another quorum.
+        # Recovery ends only after exact paired matches in succession.
         if self.recovery_remaining:
-            self.hit_ages.clear()
+            self.signature_ages.clear()
             if mismatch_count == 0:
                 self.recovery_remaining -= 1
             else:
@@ -202,7 +225,8 @@ class SemanticQuorumState:
                 "mismatched_path_count": mismatch_count,
                 "semantic_token_distance": token_distance,
                 "mismatched_paths": list(paths),
-                "quorum_hits": 0,
+                "semantic_signature": signature,
+                "signature_quorum_hits": 0,
                 "in_recovery": True,
                 "recovery_remaining": self.recovery_remaining,
                 "large_alert": False,
@@ -210,18 +234,29 @@ class SemanticQuorumState:
                 "alert": False,
             }
 
-        self.hit_ages = [
-            age + 1
-            for age in self.hit_ages
-            if age + 1 < self.config.window_ticks
-        ]
+        aged = {}
+        for key, ages in self.signature_ages.items():
+            kept = [
+                age + 1
+                for age in ages
+                if age + 1 < self.config.window_ticks
+            ]
+            if kept:
+                aged[key] = kept
+        self.signature_ages = aged
+
         qualifies = (
             self.enabled
             and mismatch_count >= self.config.min_mismatched_paths
         )
         if qualifies:
-            self.hit_ages.append(0)
+            self.signature_ages.setdefault(signature, []).append(0)
 
+        current_hits = (
+            len(self.signature_ages.get(signature, []))
+            if qualifies
+            else 0
+        )
         large_alert = (
             self.enabled
             and mismatch_count
@@ -229,7 +264,7 @@ class SemanticQuorumState:
         )
         quorum_alert = (
             qualifies
-            and len(self.hit_ages) >= self.config.required_hits
+            and current_hits >= self.config.required_hits
         )
         alert = large_alert or quorum_alert
 
@@ -239,7 +274,8 @@ class SemanticQuorumState:
             "mismatched_path_count": mismatch_count,
             "semantic_token_distance": token_distance,
             "mismatched_paths": list(paths),
-            "quorum_hits": len(self.hit_ages),
+            "semantic_signature": signature,
+            "signature_quorum_hits": current_hits,
             "in_recovery": False,
             "recovery_remaining": 0,
             "large_alert": large_alert,
@@ -247,7 +283,7 @@ class SemanticQuorumState:
             "alert": alert,
         }
         if alert:
-            self.hit_ages.clear()
+            self.signature_ages.clear()
             self.recovery_remaining = self.config.recovery_clean_ticks
         return result
 
