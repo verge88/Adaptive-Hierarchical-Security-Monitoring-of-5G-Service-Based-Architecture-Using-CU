@@ -333,3 +333,50 @@ as a universal production false-alarm guarantee.
 
 Seeds **8501..8628** are now evaluation-only and are forbidden for any future
 detector tuning.
+
+
+## Unified frozen ablation
+
+A dedicated untouched ablation block was executed after the 128-run replication:
+
+- **64 independent Open5GS runners**
+- seeds **8701..8764**
+- **768 primary episodes**
+- all Stage-17/19/20/21 components frozen before capture
+- every variant evaluated on the exact same episodes
+- 50,000 runner-cluster bootstrap resamples
+
+Canonical run: **38162596406**  
+Evaluation SHA: **7e1296046379d3ee9e3e5aac9b12ab7b550cfbe6**  
+Final artifact ID: **11711631100**
+
+Key result:
+
+- directional only: recall **0.167**, delay **11.33**
+- directional + sparse memory: recall **0.167**, delay **10.17**
+- structural only: recall **0.277**, delay **9.59**
+- semantic only: recall **1.000**, delay **5.78**
+- full Stage 20 without semantic: recall **0.277**, delay **9.59**
+- full Stage 21: recall **1.000**, delay **5.78**
+- all variants observed **0 false alarms over 5,376 clean ticks**
+
+Paired effects:
+
+- structural over directional: **+0.111 recall**, 95% CI
+  **[+0.098, +0.124]**, 85 rescued events
+- semantic over Stage 20: **+0.723 recall**, 95% CI
+  **[+0.710, +0.736]**, 555 rescued events
+- sparse memory: no recall gain in this live mixture, but
+  **-1.17 ticks** penalized delay versus directional-only
+- removing sparse or structural channels from the full Stage-21 detector caused
+  no loss on this specific Stage-21 attack mixture
+- removing the semantic channel reduced recall from **1.000 to 0.277**
+
+This does **not** establish universal redundancy of the earlier channels.
+The Stage-21 live mixture is concentrated on semantic substitutions, one
+structural sparse family and one persistent profile family. Earlier channels
+were developed under different drift/noise/fault regimes.
+
+Full methodology and tables: **stage21/ABLATION.md**.
+
+Seeds **8701..8764** are now evaluation-only and forbidden for future tuning.
