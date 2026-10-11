@@ -1,0 +1,47 @@
+name: Stage16 OOD sequential benchmark
+
+on:
+  push:
+    branches: ['stage16/ood-sequential-benchmark']
+  pull_request:
+    paths:
+      - 'research/stage16_*.py'
+      - 'stage16/**'
+      - 'stage16_tests/**'
+      - '.github/workflows/stage16-ood.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tune-and-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research stage16_tests
+      - name: Run Stage16 invariants
+        run: python -m unittest discover -s stage16_tests -v
+      - name: Tune strong baselines on disjoint block
+        run: python -m research.stage16_tune --start-seed 4001 --seeds 24 --output stage16_tuning.json
+      - name: Run frozen-detector OOD benchmark
+        run: python -m research.stage16_experiment --tuning stage16_tuning.json --start-seed 5001 --seeds 200 --output stage16_results
+      - name: Publish Stage16 report
+        run: cat stage16_results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Stage16 tuning and raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage16-ood-sequential-benchmark
+          path: |
+            stage16_tuning.json
+            stage16_results/
+          if-no-files-found: warn
+          retention-days: 30
