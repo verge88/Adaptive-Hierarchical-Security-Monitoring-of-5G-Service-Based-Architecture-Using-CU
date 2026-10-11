@@ -46,6 +46,7 @@ from .stage19_detector import (
     RobustSparseEScanConfig,
     AdaptiveRobustSparseEScanConfig,
     DualPathDirectionalConfig,
+    SparsePlusDirectionalConfig,
     log_mean_exp,
     lower_tail_rank,
     robust_center_scale,
@@ -716,6 +717,170 @@ def evaluate_dual_path(world, prepared, config):
         scale = max(
             scale_floor,
             min(scale_ceiling, scale),
+        )
+
+    return event_metrics(
+        world, alerts, false, len(clean)
+    )
+
+
+def evaluate_sparse_plus_directional(
+    world, prepared, config
+):
+    center, scale = robust_center_scale(
+        prepared["calibration"]
+    )
+    initial_scale = scale
+    calibration_z = [
+        (value - center) / scale
+        for value in prepared["calibration"]
+    ]
+
+    sparse_positive = []
+    sparse_negative = []
+    single_positive = 0.0
+    single_negative = 0.0
+    alerts = set()
+    clean = clean_tick_set(world)
+    false = 0
+
+    for index, tick in enumerate(
+        range(WARMUP_TICKS, world.total_ticks)
+    ):
+        (
+            trace_tick,
+            raw_p_positive,
+            raw_p_negative,
+            _,
+            raw_log_positive,
+            raw_log_negative,
+            _,
+        ) = prepared["trace"][index]
+        if trace_tick != tick:
+            raise AssertionError("Stage19 trace tick mismatch")
+
+        single_positive = max(
+            0.0,
+            config.single_decay * single_positive
+            + raw_log_positive
+            - config.single_reference,
+        )
+        single_negative = max(
+            0.0,
+            config.single_decay * single_negative
+            + raw_log_negative
+            - config.single_reference,
+        )
+        persistent_alarm = (
+            (
+                single_positive >= config.single_threshold
+                and raw_p_positive <= config.single_gate_p
+            )
+            or (
+                single_negative >= config.single_threshold
+                and raw_p_negative <= config.single_gate_p
+            )
+        )
+
+        value = world.values[tick]
+        residual = value - center
+        z = residual / max(1e-12, scale)
+        p_positive = upper_tail_rank(calibration_z, z)
+        p_negative = lower_tail_rank(calibration_z, z)
+        log_positive = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_positive),
+            )
+        )
+        log_negative = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_negative),
+            )
+        )
+
+        max_window = max(config.sparse_windows)
+        floor = tick - max_window + 1
+        sparse_positive = [
+            item for item in sparse_positive
+            if item[0] >= floor
+        ]
+        sparse_negative = [
+            item for item in sparse_negative
+            if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= config.sparse_tail_gate_p
+            and z >= config.sparse_magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= config.sparse_tail_gate_p
+            and z <= -config.sparse_magnitude_gate_z
+        )
+        if positive_hit:
+            sparse_positive.append(
+                (tick, max(0.0, log_positive))
+            )
+        if negative_hit:
+            sparse_negative.append(
+                (tick, max(0.0, log_negative))
+            )
+
+        sparse_positive_alarm = False
+        sparse_negative_alarm = False
+        for window in config.sparse_windows:
+            window_floor = tick - window + 1
+            pos = [
+                evidence
+                for hit_tick, evidence in sparse_positive
+                if hit_tick >= window_floor
+            ]
+            neg = [
+                evidence
+                for hit_tick, evidence in sparse_negative
+                if hit_tick >= window_floor
+            ]
+            sparse_positive_alarm = sparse_positive_alarm or (
+                len(pos) >= config.sparse_min_hits
+                and sum(pos) >= config.sparse_e_sum_threshold
+            )
+            sparse_negative_alarm = sparse_negative_alarm or (
+                len(neg) >= config.sparse_min_hits
+                and sum(neg) >= config.sparse_e_sum_threshold
+            )
+        sparse_alarm = (
+            positive_hit and sparse_positive_alarm
+        ) or (
+            negative_hit and sparse_negative_alarm
+        )
+
+        alarm = persistent_alarm or sparse_alarm
+        if alarm:
+            alerts.add(tick)
+            false += int(tick in clean)
+            single_positive = 0.0
+            single_negative = 0.0
+            sparse_positive = []
+            sparse_negative = []
+
+        cap = config.update_clip_z * scale
+        clipped = max(-cap, min(cap, residual))
+        center += config.center_alpha * clipped
+        target_scale = 1.2533141373 * abs(clipped)
+        scale_floor = 0.45 * initial_scale
+        scale_ceiling = 4.0 * initial_scale
+        target_scale = max(
+            scale_floor,
+            min(scale_ceiling, target_scale),
+        )
+        scale = (
+            (1.0 - config.scale_alpha) * scale
+            + config.scale_alpha * target_scale
+        )
+        scale = max(
+            scale_floor, min(scale_ceiling, scale)
         )
 
     return event_metrics(
