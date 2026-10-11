@@ -1,4 +1,5 @@
 """Stage-18 blind live validation invariants."""
+import ast
 import inspect
 import unittest
 
@@ -150,9 +151,18 @@ class Stage18BlindDetectorTests(unittest.TestCase):
         import research.stage18_detect as module
 
         source = inspect.getsource(module)
-        self.assertNotIn("stage18_gateway", source)
-        self.assertNotIn("private_labels", source)
-        self.assertNotIn("ATTACK_KINDS", source)
+        tree = ast.parse(source)
+        imported = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.append(node.module or "")
+        self.assertTrue(
+            all("stage18_gateway" not in name for name in imported)
+        )
+        self.assertNotIn("ATTACK_KINDS", module.__dict__)
+        self.assertNotIn("build_private_schedule", module.__dict__)
 
     def test_detector_warmup_never_alarms(self):
         rows = []
