@@ -438,3 +438,155 @@ WINDOWED_QUORUM_GRID = tuple(
     for update_gate in (0.04, 0.06)
     if hits <= window
 )
+
+
+@dataclass(frozen=True)
+class StabilityGatedQuorumConfig:
+    """Enable sparse quorum only for structurally stable warm-up accounting."""
+
+    stability_fraction_threshold: float
+    zero_epsilon: float
+    window_ticks: int
+    required_hits: int
+    mismatch_epsilon: float
+
+
+class StabilityGatedQuorumState:
+    """Stage-17 fast e-process plus calibration-gated sparse mismatch quorum.
+
+    The sparse path is enabled only when a large fraction of warm-up signed
+    discrepancies are effectively zero. In noisy environments it is disabled,
+    making the detector behavior identical to the frozen Stage-17 fast path.
+    """
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: StabilityGatedQuorumConfig,
+    ):
+        if not calibration:
+            raise ValueError("Calibration cannot be empty")
+        self.calibration = list(calibration)
+        self.config = config
+        stable_fraction = sum(
+            abs(value) <= config.zero_epsilon
+            for value in calibration
+        ) / len(calibration)
+        self.stable_fraction = stable_fraction
+        self.quorum_enabled = (
+            stable_fraction
+            >= config.stability_fraction_threshold
+        )
+
+        self.fast_positive = 0.0
+        self.fast_negative = 0.0
+        self.positive_ages: list[int] = []
+        self.negative_ages: list[int] = []
+
+    def observe(self, value: float) -> dict:
+        p_positive = upper_tail_rank(
+            self.calibration, value
+        )
+        p_negative = lower_tail_rank(
+            self.calibration, value
+        )
+        log_e_positive = math.log(
+            max(1e-12, power_betting_mixture(p_positive))
+        )
+        log_e_negative = math.log(
+            max(1e-12, power_betting_mixture(p_negative))
+        )
+
+        self.fast_positive = max(
+            0.0,
+            0.90 * self.fast_positive
+            + log_e_positive
+            - 0.12,
+        )
+        self.fast_negative = max(
+            0.0,
+            0.90 * self.fast_negative
+            + log_e_negative
+            - 0.12,
+        )
+
+        self.positive_ages = [
+            age + 1
+            for age in self.positive_ages
+            if age + 1 < self.config.window_ticks
+        ]
+        self.negative_ages = [
+            age + 1
+            for age in self.negative_ages
+            if age + 1 < self.config.window_ticks
+        ]
+
+        if self.quorum_enabled:
+            if value >= self.config.mismatch_epsilon:
+                self.positive_ages.append(0)
+            elif value <= -self.config.mismatch_epsilon:
+                self.negative_ages.append(0)
+
+        positive_quorum = (
+            self.quorum_enabled
+            and value >= self.config.mismatch_epsilon
+            and len(self.positive_ages)
+            >= self.config.required_hits
+        )
+        negative_quorum = (
+            self.quorum_enabled
+            and value <= -self.config.mismatch_epsilon
+            and len(self.negative_ages)
+            >= self.config.required_hits
+        )
+
+        positive_alert = (
+            (
+                self.fast_positive >= 5.0
+                and p_positive <= 0.06
+            )
+            or positive_quorum
+        )
+        negative_alert = (
+            (
+                self.fast_negative >= 5.0
+                and p_negative <= 0.06
+            )
+            or negative_quorum
+        )
+        alert = positive_alert or negative_alert
+
+        record = {
+            "p_positive": p_positive,
+            "p_negative": p_negative,
+            "stable_fraction": self.stable_fraction,
+            "quorum_enabled": self.quorum_enabled,
+            "positive_quorum_hits": len(self.positive_ages),
+            "negative_quorum_hits": len(self.negative_ages),
+            "positive_alert": positive_alert,
+            "negative_alert": negative_alert,
+            "alert": alert,
+        }
+
+        if alert:
+            self.fast_positive = 0.0
+            self.fast_negative = 0.0
+            self.positive_ages.clear()
+            self.negative_ages.clear()
+
+        return record
+
+
+STABILITY_GATED_GRID = tuple(
+    StabilityGatedQuorumConfig(
+        stability_fraction_threshold=stability,
+        zero_epsilon=1e-12,
+        window_ticks=window,
+        required_hits=hits,
+        mismatch_epsilon=mismatch,
+    )
+    for stability in (0.90, 0.95, 0.98)
+    for window in (8, 12, 16)
+    for hits in (2, 3, 4)
+    for mismatch in (0.010, 0.020, 0.030)
+)
