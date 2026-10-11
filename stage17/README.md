@@ -71,3 +71,42 @@ Success requires the frozen hybrid to improve the primary event-level tradeoff
 against the frozen development-tuned Page-Hinkley without exceeding the same
 false-alarm ceiling. A negative final result will be retained as such rather
 than retuned on final seeds.
+
+
+## Development outcome and frozen final configuration
+
+Development on seeds 6001..6040 evaluated four proposed hybrid/evidence
+recurrences plus a Page-Hinkley comparator retuned on exactly the same worlds.
+
+The first three variants did not beat Page-Hinkley:
+
+- adaptive e-Page: recall 0.258, delay 212.0 s, FA 0.344 / 1000;
+- e-assisted Page-Hinkley: recall 0.392, delay 198.8 s, FA 0.460 / 1000;
+- e-confirmed Page-Hinkley: recall 0.363, delay 202.3 s, FA 0.368 / 1000.
+
+The useful change came from preserving **direction** instead of taking only an
+absolute integrity discrepancy. The selected directional e-process keeps
+independent positive/negative one-sided e-evidence accumulators. On development
+it achieved:
+
+- event recall **0.475** vs **0.406** for development-tuned Page-Hinkley;
+- horizon-penalized delay **192.8 s** vs **197.1 s**;
+- false alarms **0.368** vs **0.483 / 1000 clean checks**.
+
+The directional configuration was therefore frozen before any Stage-17 final
+seed was evaluated:
+
+- decay = 0.90
+- reference = 0.12
+- threshold = 5.0
+- one-sided direction gate p = 0.06
+
+The development-tuned Page-Hinkley comparator was frozen at:
+
+- delta = 0.50
+- threshold = 8.0
+- integrity gate p = 0.08
+- mean alpha = 0.10
+
+The final script research/stage17_final.py is hard-coded to exactly 200 worlds,
+seeds 7001..7200, and exits if another final block is requested.
