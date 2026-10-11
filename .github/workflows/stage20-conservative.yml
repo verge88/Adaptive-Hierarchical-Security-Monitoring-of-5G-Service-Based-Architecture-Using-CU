@@ -1,0 +1,34 @@
+name: Stage20 conservative structural development
+
+on:
+  push:
+    branches: ['stage20/structural-integrity']
+    paths:
+      - 'research/stage20_conservative_develop.py'
+      - 'research/stage20_structure.py'
+      - '.github/workflows/stage20-conservative.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research
+      - name: Run mixed-regime zero-FA development
+        run: python -m research.stage20_conservative_develop --output stage20_conservative_development.json
+      - name: Publish result
+        run: cat stage20_conservative_development.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage20-conservative-development
+          path: stage20_conservative_development.json
+          retention-days: 30
