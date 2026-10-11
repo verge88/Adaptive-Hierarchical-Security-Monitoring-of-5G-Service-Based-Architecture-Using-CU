@@ -1,0 +1,146 @@
+name: Stage18 blind native Open5GS SCP validation
+
+on:
+  push:
+    branches: ['stage18/blind-open5gs-scp']
+    paths:
+      - 'research/stage18_*.py'
+      - 'stage18/**'
+      - 'stage18_tests/**'
+      - '.github/workflows/stage18-open5gs-blind.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage18 invariants
+        run: |
+          python -m compileall -q research stage18_tests
+          python -m unittest discover -s stage18_tests -v
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate native Open5GS SCP compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml config -q
+      - name: Start genuine Open5GS v2.7.6 NRF NSSF AUSF SCP binaries
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml up -d --pull always
+      - name: Verify native NRF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Capture real SCP traffic with labels isolated from telemetry
+        run: |
+          python -m research.stage18_capture \
+            --seed $((8101 + ${{ matrix.shard }})) \
+            --telemetry-output stage18_telemetry \
+            --labels-output stage18_private_labels
+      - name: Capture Open5GS provenance
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml logs --no-color > diagnostics/native_open5gs.log 2>&1 || true
+      - name: Upload label-free telemetry artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-telemetry-${{ matrix.shard }}
+          path: |
+            stage18_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-labels-${{ matrix.shard }}
+          path: stage18_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: capture
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY label-free telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage18-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove private labels are absent
+        run: |
+          if find detector_input -name 'private_labels.json' | grep -q .; then
+            echo "Private labels leaked into detector job"
+            exit 1
+          fi
+      - name: Locate label-free telemetry artifact
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Stage17 detectors blind
+        run: |
+          python -m research.stage18_detect \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
+            --output stage18_detector
+      - name: Upload detector alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-alarms-${{ matrix.shard }}
+          path: stage18_detector/
+          retention-days: 30
+
+  audit:
+    needs: [capture, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download telemetry, labels and alarms only after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage18-*
+          path: stage18_batches
+      - name: Join labels post-hoc and compute runner-cluster effects
+        run: python -m research.stage18_report --input stage18_batches --output stage18_report
+      - name: Publish Stage18 scientific report
+        run: cat stage18_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Stage18 audited result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-blind-open5gs-scp-report
+          path: stage18_report/
+          retention-days: 90

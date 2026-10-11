@@ -1,0 +1,94 @@
+name: Stage18 blind postprocess of fixed live capture
+
+on:
+  push:
+    branches: ['stage18/postprocess-fixed-capture']
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  blind-detect:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY telemetry from frozen live capture run
+        uses: actions/download-artifact@v4
+        with:
+          name: stage18-telemetry-${{ matrix.shard }}
+          path: detector_input
+          repository: ${{ github.repository }}
+          run-id: 38138615643
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prove private labels are absent
+        run: |
+          if find detector_input -name 'private_labels.json' | grep -q .; then
+            echo "Private labels leaked into detector job"
+            exit 1
+          fi
+      - name: Locate frozen telemetry artifact
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Stage17 detectors blind
+        run: |
+          python -m research.stage18_detect \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
+            --output stage18_detector
+      - name: Upload blind detector alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-alarms-${{ matrix.shard }}
+          path: stage18_detector/
+          retention-days: 30
+
+  audit:
+    needs: blind-detect
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download frozen telemetry/provenance from original capture run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage18-telemetry-*
+          path: stage18_batches
+          repository: ${{ github.repository }}
+          run-id: 38138615643
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download PRIVATE labels from original capture run after detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage18-labels-*
+          path: stage18_batches
+          repository: ${{ github.repository }}
+          run-id: 38138615643
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download current blind alarms
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage18-alarms-*
+          path: stage18_batches
+      - name: Join labels post-hoc and compute runner-cluster effects
+        run: python -m research.stage18_report --input stage18_batches --output stage18_report
+      - name: Publish Stage18 scientific report
+        run: cat stage18_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Stage18 audited result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage18-blind-open5gs-scp-report
+          path: stage18_report/
+          retention-days: 90
