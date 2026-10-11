@@ -38,12 +38,14 @@ from .stage19_detector import (
     ROBUST_SINGLE_WINDOW_SCAN_GRID,
     ADAPTIVE_ROBUST_SCAN_GRID,
     ADAPTIVE_ROBUST_SINGLE_WINDOW_GRID,
+    DUAL_PATH_GRID,
     MultiScaleDirectionalConfig,
     ScalarPageHinkleyConfig,
     SingleScaleDirectionalConfig,
     SparseEScanConfig,
     RobustSparseEScanConfig,
     AdaptiveRobustSparseEScanConfig,
+    DualPathDirectionalConfig,
     log_mean_exp,
     lower_tail_rank,
     robust_center_scale,
@@ -564,6 +566,163 @@ def evaluate_adaptive_robust_sparse_scan(
     )
 
 
+def evaluate_dual_path(world, prepared, config):
+    center, scale = robust_center_scale(
+        prepared["calibration"]
+    )
+    initial_scale = scale
+    calibration_z = [
+        (value - center) / scale
+        for value in prepared["calibration"]
+    ]
+    sparse_positive = []
+    sparse_negative = []
+    sustained_positive = []
+    sustained_negative = []
+    alerts = set()
+    clean = clean_tick_set(world)
+    false = 0
+
+    for tick in range(WARMUP_TICKS, world.total_ticks):
+        value = world.values[tick]
+        residual = value - center
+        z = residual / max(1e-12, scale)
+        p_positive = upper_tail_rank(calibration_z, z)
+        p_negative = lower_tail_rank(calibration_z, z)
+        log_positive = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_positive),
+            )
+        )
+        log_negative = math.log(
+            max(
+                1e-12,
+                power_betting_mixture(p_negative),
+            )
+        )
+
+        max_sparse_window = max(config.sparse_windows)
+        sparse_floor = tick - max_sparse_window + 1
+        sparse_positive = [
+            item for item in sparse_positive
+            if item[0] >= sparse_floor
+        ]
+        sparse_negative = [
+            item for item in sparse_negative
+            if item[0] >= sparse_floor
+        ]
+
+        sparse_positive_hit = (
+            p_positive <= config.sparse_tail_gate_p
+            and z >= config.sparse_magnitude_gate_z
+        )
+        sparse_negative_hit = (
+            p_negative <= config.sparse_tail_gate_p
+            and z <= -config.sparse_magnitude_gate_z
+        )
+        if sparse_positive_hit:
+            sparse_positive.append(
+                (tick, max(0.0, log_positive))
+            )
+        if sparse_negative_hit:
+            sparse_negative.append(
+                (tick, max(0.0, log_negative))
+            )
+
+        sparse_positive_alarm = False
+        sparse_negative_alarm = False
+        for window in config.sparse_windows:
+            floor = tick - window + 1
+            pos = [
+                evidence
+                for hit_tick, evidence in sparse_positive
+                if hit_tick >= floor
+            ]
+            neg = [
+                evidence
+                for hit_tick, evidence in sparse_negative
+                if hit_tick >= floor
+            ]
+            sparse_positive_alarm = sparse_positive_alarm or (
+                len(pos) >= config.sparse_min_hits
+                and sum(pos) >= config.sparse_e_sum_threshold
+            )
+            sparse_negative_alarm = sparse_negative_alarm or (
+                len(neg) >= config.sparse_min_hits
+                and sum(neg) >= config.sparse_e_sum_threshold
+            )
+
+        sustained_floor = tick - config.sustained_window + 1
+        sustained_positive = [
+            hit_tick for hit_tick in sustained_positive
+            if hit_tick >= sustained_floor
+        ]
+        sustained_negative = [
+            hit_tick for hit_tick in sustained_negative
+            if hit_tick >= sustained_floor
+        ]
+        sustained_positive_hit = (
+            z >= config.sustained_z
+            and p_positive <= config.sustained_gate_p
+        )
+        sustained_negative_hit = (
+            z <= -config.sustained_z
+            and p_negative <= config.sustained_gate_p
+        )
+        if sustained_positive_hit:
+            sustained_positive.append(tick)
+        if sustained_negative_hit:
+            sustained_negative.append(tick)
+
+        sparse_alarm = (
+            sparse_positive_hit and sparse_positive_alarm
+        ) or (
+            sparse_negative_hit and sparse_negative_alarm
+        )
+        sustained_alarm = (
+            sustained_positive_hit
+            and len(sustained_positive)
+            >= config.sustained_hits
+        ) or (
+            sustained_negative_hit
+            and len(sustained_negative)
+            >= config.sustained_hits
+        )
+        alarm = sparse_alarm or sustained_alarm
+
+        if alarm:
+            alerts.add(tick)
+            false += int(tick in clean)
+            sparse_positive = []
+            sparse_negative = []
+            sustained_positive = []
+            sustained_negative = []
+
+        cap = config.update_clip_z * scale
+        clipped = max(-cap, min(cap, residual))
+        center += config.center_alpha * clipped
+        target_scale = 1.2533141373 * abs(clipped)
+        scale_floor = 0.45 * initial_scale
+        scale_ceiling = 4.0 * initial_scale
+        target_scale = max(
+            scale_floor,
+            min(scale_ceiling, target_scale),
+        )
+        scale = (
+            (1.0 - config.scale_alpha) * scale
+            + config.scale_alpha * target_scale
+        )
+        scale = max(
+            scale_floor,
+            min(scale_ceiling, scale),
+        )
+
+    return event_metrics(
+        world, alerts, false, len(clean)
+    )
+
+
 def evaluate_page_hinkley(world, prepared, config):
     mean = 1.0
     cumulative = 0.0
@@ -718,6 +877,10 @@ def develop(
             ADAPTIVE_ROBUST_SINGLE_WINDOW_GRID,
             evaluate_adaptive_robust_sparse_scan,
         ),
+        "dual_path_directional": (
+            DUAL_PATH_GRID,
+            evaluate_dual_path,
+        ),
         "page_hinkley": (
             PAGE_HINKLEY_GRID,
             evaluate_page_hinkley,
@@ -779,6 +942,7 @@ def develop(
     adaptive_single = output["selected"][
         "adaptive_robust_sparse_scan_single_window"
     ]
+    dual_path = output["selected"]["dual_path_directional"]
     output["development_effect_multiscale_minus_single"] = {
         key: multi["summary"][key] - single["summary"][key]
         for key in multi["summary"]
@@ -804,9 +968,16 @@ def develop(
         )
         for key in adaptive_multi["summary"]
     }
+    output["development_effect_dual_path_minus_single_scale"] = {
+        key: (
+            dual_path["summary"][key]
+            - single["summary"][key]
+        )
+        for key in dual_path["summary"]
+    }
     output["stage19_candidate"] = {
-        "family": "adaptive_robust_sparse_scan_multiscale",
-        **adaptive_multi,
+        "family": "dual_path_directional",
+        **dual_path,
     }
     return output
 
