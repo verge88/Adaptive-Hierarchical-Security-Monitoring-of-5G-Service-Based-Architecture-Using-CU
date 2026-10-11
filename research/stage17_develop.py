@@ -29,8 +29,10 @@ from .stage16_simulation import WorldOOD, fixed_schedule
 from .stage17_detector import (
     ADAPTIVE_EPAGE_GRID,
     E_ASSISTED_PAGE_GRID,
+    E_CONFIRMED_PAGE_GRID,
     AdaptiveEPageConfig,
     EAssistedPageConfig,
+    EConfirmedPageConfig,
 )
 
 DEV_START_SEED = 6001
@@ -234,6 +236,53 @@ def evaluate_e_assisted_page_trace(world, trace, config):
     )
 
 
+def evaluate_e_confirmed_page_trace(world, trace, config):
+    mean = [1.0] * N_NF
+    cumulative = [0.0] * N_NF
+    minimum = [0.0] * N_NF
+    e_memory = [0.0] * N_NF
+    found = {attack.nf: None for attack in world.attacks}
+    false_alarms = clean_checks = 0
+
+    for nf, t, surprise, p_i, log_e in trace["checks"]:
+        mean[nf] = (
+            (1.0 - config.mean_alpha) * mean[nf]
+            + config.mean_alpha * surprise
+        )
+        cumulative[nf] += (
+            surprise - mean[nf] - config.delta
+        )
+        minimum[nf] = min(minimum[nf], cumulative[nf])
+        ph_statistic = cumulative[nf] - minimum[nf]
+
+        e_memory[nf] = (
+            config.e_decay * e_memory[nf]
+            + max(0.0, log_e)
+        )
+        alert = (
+            ph_statistic >= config.threshold
+            and p_i <= config.integrity_gate_p
+            and e_memory[nf]
+            >= config.e_confirm_threshold
+        )
+
+        if world.active_attack(nf, t):
+            if alert and found[nf] is None:
+                found[nf] = t
+        else:
+            clean_checks += 1
+            false_alarms += int(alert)
+
+        if alert:
+            cumulative[nf] = 0.0
+            minimum[nf] = 0.0
+            e_memory[nf] = 0.0
+
+    return event_summary(
+        world, found, false_alarms, clean_checks
+    )
+
+
 def evaluate_page_hinkley_trace(world, trace, config):
     mean = [1.0] * N_NF
     cumulative = [0.0] * N_NF
@@ -373,6 +422,21 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
             }
         )
 
+    confirmed_candidates = []
+    for config in E_CONFIRMED_PAGE_GRID:
+        rows = [
+            evaluate_e_confirmed_page_trace(
+                world, trace, config
+            )
+            for world, trace in zip(worlds, traces)
+        ]
+        confirmed_candidates.append(
+            {
+                "config": config_dict(config),
+                "summary": summarize(rows),
+            }
+        )
+
     ph_candidates = []
     for config in PAGE_HINKLEY_DEV_GRID:
         rows = [
@@ -390,6 +454,7 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
 
     best_adaptive_e_page = select_best(hybrid_candidates)
     best_assisted = select_best(assisted_candidates)
+    best_confirmed = select_best(confirmed_candidates)
     best_ph = select_best(ph_candidates)
     best_hybrid = select_best(
         [
@@ -400,6 +465,10 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
             {
                 "family": "e_assisted_page_hinkley",
                 **best_assisted,
+            },
+            {
+                "family": "e_confirmed_page_hinkley",
+                **best_confirmed,
             },
         ]
     )
@@ -416,11 +485,13 @@ def develop(start_seed=DEV_START_SEED, n_seeds=DEV_SEEDS):
         },
         "adaptive_e_page_grid_size": len(ADAPTIVE_EPAGE_GRID),
         "e_assisted_page_grid_size": len(E_ASSISTED_PAGE_GRID),
+        "e_confirmed_page_grid_size": len(E_CONFIRMED_PAGE_GRID),
         "page_hinkley_grid_size": len(
             PAGE_HINKLEY_DEV_GRID
         ),
         "selected_adaptive_e_page": best_adaptive_e_page,
         "selected_e_assisted_page_hinkley": best_assisted,
+        "selected_e_confirmed_page_hinkley": best_confirmed,
         "selected_hybrid": best_hybrid,
         "selected_page_hinkley": best_ph,
         "development_effect_hybrid_minus_page_hinkley": {
