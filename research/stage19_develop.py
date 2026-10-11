@@ -32,8 +32,11 @@ import statistics
 from .stage15_detector import power_betting_mixture, upper_tail_rank
 from .stage19_detector import (
     MULTISCALE_GRID,
+    SPARSE_CLUSTER_GRID,
     MultiscaleDirectionalConfig,
     MultiscaleDirectionalState,
+    SparseClusterDirectionalConfig,
+    SparseClusterDirectionalState,
     lower_tail_rank,
 )
 
@@ -211,6 +214,22 @@ def multiscale_outputs(
     return alerts
 
 
+def cluster_outputs(
+    values: list[float],
+    config: SparseClusterDirectionalConfig,
+) -> list[bool]:
+    state = SparseClusterDirectionalState(
+        values[:WARMUP], config
+    )
+    alerts = []
+    for tick, value in enumerate(values):
+        if tick < WARMUP:
+            alerts.append(False)
+        else:
+            alerts.append(state.observe(value)["alert"])
+    return alerts
+
+
 def evaluate(world: SparseSignedWorld, alerts: list[bool]) -> dict:
     attack_ticks = {
         tick
@@ -362,7 +381,7 @@ def tune() -> dict:
         ]
     )
 
-    candidates = []
+    multiscale_candidates = []
     for config in MULTISCALE_GRID:
         rows = [
             evaluate(
@@ -371,21 +390,73 @@ def tune() -> dict:
             )
             for world in worlds
         ]
-        candidates.append(
+        multiscale_candidates.append(
             {
+                "family": "multiscale_log_e",
                 "config": dict(config.__dict__),
                 "summary": summarize(rows),
             }
         )
 
-    selected = select_best(candidates)
-    validation = run_block(
-        VALID_START,
-        VALID_SEEDS,
-        MultiscaleDirectionalConfig(
-            **selected["config"]
-        ),
+    cluster_candidates = []
+    for config in SPARSE_CLUSTER_GRID:
+        rows = [
+            evaluate(
+                world,
+                cluster_outputs(world.values, config),
+            )
+            for world in worlds
+        ]
+        cluster_candidates.append(
+            {
+                "family": "bounded_tail_cluster",
+                "config": dict(config.__dict__),
+                "summary": summarize(rows),
+            }
+        )
+
+    selected_multiscale = select_best(multiscale_candidates)
+    selected_cluster = select_best(cluster_candidates)
+    selected = select_best(
+        [selected_multiscale, selected_cluster]
     )
+
+    validation_worlds = [
+        SparseSignedWorld(seed)
+        for seed in range(VALID_START, VALID_START + VALID_SEEDS)
+    ]
+    validation_stage17 = summarize(
+        [
+            evaluate(world, stage17_outputs(world.values))
+            for world in validation_worlds
+        ]
+    )
+    if selected["family"] == "bounded_tail_cluster":
+        selected_config = SparseClusterDirectionalConfig(
+            **selected["config"]
+        )
+        validation_selected = summarize(
+            [
+                evaluate(
+                    world,
+                    cluster_outputs(world.values, selected_config),
+                )
+                for world in validation_worlds
+            ]
+        )
+    else:
+        selected_config = MultiscaleDirectionalConfig(
+            **selected["config"]
+        )
+        validation_selected = summarize(
+            [
+                evaluate(
+                    world,
+                    multiscale_outputs(world.values, selected_config),
+                )
+                for world in validation_worlds
+            ]
+        )
 
     return {
         "protocol": {
@@ -406,10 +477,16 @@ def tune() -> dict:
                 "then minimize penalized delay and false alarms"
             ),
         },
-        "grid_size": len(MULTISCALE_GRID),
+        "multiscale_log_e_grid_size": len(MULTISCALE_GRID),
+        "bounded_tail_cluster_grid_size": len(SPARSE_CLUSTER_GRID),
         "stage17_tuning_block": stage17_summary,
-        "selected_multiscale": selected,
-        "synthetic_validation": validation,
+        "selected_multiscale_log_e": selected_multiscale,
+        "selected_bounded_tail_cluster": selected_cluster,
+        "selected_detector": selected,
+        "synthetic_validation": {
+            "stage17_directional": validation_stage17,
+            "selected_detector": validation_selected,
+        },
     }
 
 
