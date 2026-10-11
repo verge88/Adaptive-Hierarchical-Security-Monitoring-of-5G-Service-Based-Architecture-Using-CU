@@ -184,7 +184,12 @@ def detect(rows: list[dict]) -> dict:
         )
         outputs.append(record)
 
+    seed = rows[0].get("seed")
+    if any(row.get("seed") != seed for row in rows):
+        raise ValueError("Stage18 telemetry mixes seeds")
+
     return {
+        "seed": seed,
         "protocol": {
             "detector_received_private_labels": False,
             "warmup_ticks": WARMUP_TICKS,
