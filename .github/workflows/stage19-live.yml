@@ -1,0 +1,146 @@
+name: Stage19 blind sparse Open5GS validation
+
+on:
+  push:
+    branches: ['stage19/multiscale-directional-memory']
+    paths:
+      - 'research/stage19_live_detect.py'
+      - 'research/stage19_report.py'
+      - 'stage19_tests/**'
+      - '.github/workflows/stage19-live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage19 frozen-protocol tests
+        run: |
+          python -m compileall -q research stage19_tests
+          python -m unittest discover -s stage19_tests -v
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate native Open5GS SCP compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml config -q
+      - name: Start genuine Open5GS v2.7.6 NRF NSSF AUSF SCP binaries
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml up -d --pull always
+      - name: Verify native NRF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Capture untouched Stage19 live block
+        run: |
+          python -m research.stage18_capture \
+            --seed $((8201 + ${{ matrix.shard }})) \
+            --telemetry-output stage19_telemetry \
+            --labels-output stage19_private_labels
+      - name: Capture Open5GS provenance
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml logs --no-color > diagnostics/native_open5gs.log 2>&1 || true
+      - name: Upload label-free telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-telemetry-${{ matrix.shard }}
+          path: |
+            stage19_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-labels-${{ matrix.shard }}
+          path: stage19_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: capture
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY Stage19 telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage19-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove private labels are absent
+        run: |
+          if find detector_input -name 'private_labels.json' | grep -q .; then
+            echo "Private labels leaked into Stage19 detector job"
+            exit 1
+          fi
+      - name: Locate telemetry
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Stage17 and Stage19 detectors blind
+        run: |
+          python -m research.stage19_live_detect \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
+            --output stage19_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-alarms-${{ matrix.shard }}
+          path: stage19_detector/
+          retention-days: 30
+
+  audit:
+    needs: [capture, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage19 artifacts only after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage19-*
+          path: stage19_batches
+      - name: Join labels post-hoc and compute runner-cluster effects
+        run: python -m research.stage19_report --input stage19_batches --output stage19_report
+      - name: Publish Stage19 report
+        run: cat stage19_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage19 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-blind-sparse-open5gs-report
+          path: stage19_report/
+          retention-days: 90
