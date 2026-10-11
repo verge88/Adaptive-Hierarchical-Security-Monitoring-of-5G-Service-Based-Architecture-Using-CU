@@ -8,6 +8,8 @@ from research.stage17_detector import (
     DriftAdaptiveEPageDetector,
     EAssistedPageConfig,
     EAssistedPageHinkleyDetector,
+    EConfirmedPageConfig,
+    EConfirmedPageHinkleyDetector,
 )
 from research.stage17_develop import (
     DEV_START_SEED,
@@ -18,6 +20,7 @@ from research.stage17_develop import (
     develop,
     evaluate_hybrid_trace,
     evaluate_e_assisted_page_trace,
+    evaluate_e_confirmed_page_trace,
 )
 
 
@@ -95,6 +98,38 @@ class Stage17DevelopmentTests(unittest.TestCase):
             EAssistedPageHinkleyDetector(world, config),
         )
         fast = evaluate_e_assisted_page_trace(
+            world,
+            build_trace(world),
+            config,
+        )
+        self.assertAlmostEqual(
+            full["primary_event_recall"],
+            fast["event_recall"],
+        )
+        self.assertAlmostEqual(
+            full["primary_horizon_penalized_delay_s"],
+            fast["horizon_penalized_delay_s"],
+        )
+        self.assertAlmostEqual(
+            full["false_alarms_per_1000_clean_checks"],
+            fast["false_alarms_per_1000"],
+        )
+
+    def test_fast_e_confirmed_replay_matches_full_detector(self):
+        world = WorldOOD(6004)
+        config = EConfirmedPageConfig(
+            mean_alpha=0.10,
+            delta=0.50,
+            threshold=5.5,
+            integrity_gate_p=0.08,
+            e_decay=0.70,
+            e_confirm_threshold=0.70,
+        )
+        full = evaluate_detector(
+            world,
+            EConfirmedPageHinkleyDetector(world, config),
+        )
+        fast = evaluate_e_confirmed_page_trace(
             world,
             build_trace(world),
             config,
