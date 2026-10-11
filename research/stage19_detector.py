@@ -966,3 +966,205 @@ DUAL_PATH_GRID = tuple(
     for sustained_z in (1.8, 2.2, 2.6, 3.0)
     for sustained_gate in (0.15, 0.25)
 )
+
+
+@dataclass(frozen=True)
+class SparsePlusDirectionalConfig:
+    """Independent adaptive sparse path plus raw directional e-process."""
+
+    sparse_windows: tuple[int, ...]
+    sparse_tail_gate_p: float
+    sparse_magnitude_gate_z: float
+    sparse_min_hits: int
+    sparse_e_sum_threshold: float
+    center_alpha: float
+    scale_alpha: float
+    single_decay: float
+    single_reference: float
+    single_threshold: float
+    single_gate_p: float
+    update_clip_z: float = 3.0
+
+
+class SparsePlusDirectionalDetector:
+    """OR-fusion of sparse adaptive scan and persistent raw e-process."""
+
+    def __init__(
+        self,
+        calibration: list[float],
+        config: SparsePlusDirectionalConfig,
+    ):
+        self.config = config
+        self.raw_calibration = list(calibration)
+        self.center, self.scale = robust_center_scale(calibration)
+        self.initial_scale = self.scale
+        self.calibration_z = [
+            (value - self.center) / self.scale
+            for value in calibration
+        ]
+        self.sparse_positive: list[tuple[int, float]] = []
+        self.sparse_negative: list[tuple[int, float]] = []
+        self.single_positive = 0.0
+        self.single_negative = 0.0
+        self.tick = -1
+
+    def _update_baseline(self, residual: float):
+        cap = self.config.update_clip_z * self.scale
+        clipped = max(-cap, min(cap, residual))
+        self.center += self.config.center_alpha * clipped
+        target_scale = 1.2533141373 * abs(clipped)
+        floor = 0.45 * self.initial_scale
+        ceiling = 4.0 * self.initial_scale
+        target_scale = max(floor, min(ceiling, target_scale))
+        self.scale = (
+            (1.0 - self.config.scale_alpha) * self.scale
+            + self.config.scale_alpha * target_scale
+        )
+        self.scale = max(floor, min(ceiling, self.scale))
+
+    def observe(self, value: float) -> tuple[bool, dict]:
+        self.tick += 1
+
+        # Persistent channel: exactly the raw signed-rank recurrence family.
+        raw_p_positive = upper_tail_rank(
+            self.raw_calibration, value
+        )
+        raw_p_negative = lower_tail_rank(
+            self.raw_calibration, value
+        )
+        self.single_positive = max(
+            0.0,
+            self.config.single_decay * self.single_positive
+            + log_e_from_p(raw_p_positive)
+            - self.config.single_reference,
+        )
+        self.single_negative = max(
+            0.0,
+            self.config.single_decay * self.single_negative
+            + log_e_from_p(raw_p_negative)
+            - self.config.single_reference,
+        )
+        persistent_alarm = (
+            (
+                self.single_positive >= self.config.single_threshold
+                and raw_p_positive <= self.config.single_gate_p
+            )
+            or (
+                self.single_negative >= self.config.single_threshold
+                and raw_p_negative <= self.config.single_gate_p
+            )
+        )
+
+        # Sparse channel: adaptively standardized extreme-hit scan.
+        residual = value - self.center
+        z = residual / max(1e-12, self.scale)
+        p_positive = upper_tail_rank(
+            self.calibration_z, z
+        )
+        p_negative = lower_tail_rank(
+            self.calibration_z, z
+        )
+
+        max_window = max(self.config.sparse_windows)
+        floor = self.tick - max_window + 1
+        self.sparse_positive = [
+            item for item in self.sparse_positive if item[0] >= floor
+        ]
+        self.sparse_negative = [
+            item for item in self.sparse_negative if item[0] >= floor
+        ]
+
+        positive_hit = (
+            p_positive <= self.config.sparse_tail_gate_p
+            and z >= self.config.sparse_magnitude_gate_z
+        )
+        negative_hit = (
+            p_negative <= self.config.sparse_tail_gate_p
+            and z <= -self.config.sparse_magnitude_gate_z
+        )
+        if positive_hit:
+            self.sparse_positive.append(
+                (self.tick, max(0.0, log_e_from_p(p_positive)))
+            )
+        if negative_hit:
+            self.sparse_negative.append(
+                (self.tick, max(0.0, log_e_from_p(p_negative)))
+            )
+
+        sparse_positive_alarm = False
+        sparse_negative_alarm = False
+        for window in self.config.sparse_windows:
+            window_floor = self.tick - window + 1
+            pos = [
+                evidence for hit_tick, evidence in self.sparse_positive
+                if hit_tick >= window_floor
+            ]
+            neg = [
+                evidence for hit_tick, evidence in self.sparse_negative
+                if hit_tick >= window_floor
+            ]
+            sparse_positive_alarm = sparse_positive_alarm or (
+                len(pos) >= self.config.sparse_min_hits
+                and sum(pos) >= self.config.sparse_e_sum_threshold
+            )
+            sparse_negative_alarm = sparse_negative_alarm or (
+                len(neg) >= self.config.sparse_min_hits
+                and sum(neg) >= self.config.sparse_e_sum_threshold
+            )
+        sparse_alarm = (
+            positive_hit and sparse_positive_alarm
+        ) or (
+            negative_hit and sparse_negative_alarm
+        )
+
+        alarm = persistent_alarm or sparse_alarm
+        if alarm:
+            self.single_positive = 0.0
+            self.single_negative = 0.0
+            self.sparse_positive = []
+            self.sparse_negative = []
+
+        self._update_baseline(residual)
+
+        return alarm, {
+            "persistent_alarm": persistent_alarm,
+            "sparse_alarm": sparse_alarm,
+            "raw_p_positive": raw_p_positive,
+            "raw_p_negative": raw_p_negative,
+            "robust_z": z,
+        }
+
+
+SPARSE_PLUS_BASES = (
+    ((16, 32, 64), 0.07, 3.5, 2, 2.2),
+    ((16, 32, 64), 0.04, 3.5, 2, 2.2),
+    ((16, 32, 64), 0.07, 4.5, 2, 2.2),
+    ((16, 32, 64), 0.07, 3.5, 3, 2.8),
+)
+
+SPARSE_PLUS_DIRECTIONAL_GRID = tuple(
+    SparsePlusDirectionalConfig(
+        sparse_windows=windows,
+        sparse_tail_gate_p=tail_gate,
+        sparse_magnitude_gate_z=z_gate,
+        sparse_min_hits=min_hits,
+        sparse_e_sum_threshold=e_threshold,
+        center_alpha=0.03,
+        scale_alpha=0.02,
+        single_decay=decay,
+        single_reference=reference,
+        single_threshold=threshold,
+        single_gate_p=single_gate,
+    )
+    for (
+        windows,
+        tail_gate,
+        z_gate,
+        min_hits,
+        e_threshold,
+    ) in SPARSE_PLUS_BASES
+    for decay in (0.85, 0.90, 0.96, 0.99)
+    for reference in (0.06, 0.12, 0.18, 0.25)
+    for threshold in (7.0, 9.0, 11.0)
+    for single_gate in (0.04, 0.07)
+)
