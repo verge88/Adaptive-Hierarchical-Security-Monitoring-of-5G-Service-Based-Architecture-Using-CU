@@ -37,6 +37,9 @@ from .stage19_detector import (
     MultiscaleDirectionalState,
     SparseClusterDirectionalConfig,
     SparseClusterDirectionalState,
+    WINDOWED_QUORUM_GRID,
+    WindowedQuorumDirectionalConfig,
+    WindowedQuorumDirectionalState,
     lower_tail_rank,
 )
 
@@ -219,6 +222,22 @@ def cluster_outputs(
     config: SparseClusterDirectionalConfig,
 ) -> list[bool]:
     state = SparseClusterDirectionalState(
+        values[:WARMUP], config
+    )
+    alerts = []
+    for tick, value in enumerate(values):
+        if tick < WARMUP:
+            alerts.append(False)
+        else:
+            alerts.append(state.observe(value)["alert"])
+    return alerts
+
+
+def quorum_outputs(
+    values: list[float],
+    config: WindowedQuorumDirectionalConfig,
+) -> list[bool]:
+    state = WindowedQuorumDirectionalState(
         values[:WARMUP], config
     )
     alerts = []
@@ -415,10 +434,32 @@ def tune() -> dict:
             }
         )
 
+    quorum_candidates = []
+    for config in WINDOWED_QUORUM_GRID:
+        rows = [
+            evaluate(
+                world,
+                quorum_outputs(world.values, config),
+            )
+            for world in worlds
+        ]
+        quorum_candidates.append(
+            {
+                "family": "windowed_directional_quorum",
+                "config": dict(config.__dict__),
+                "summary": summarize(rows),
+            }
+        )
+
     selected_multiscale = select_best(multiscale_candidates)
     selected_cluster = select_best(cluster_candidates)
+    selected_quorum = select_best(quorum_candidates)
     selected = select_best(
-        [selected_multiscale, selected_cluster]
+        [
+            selected_multiscale,
+            selected_cluster,
+            selected_quorum,
+        ]
     )
 
     validation_worlds = [
@@ -440,6 +481,19 @@ def tune() -> dict:
                 evaluate(
                     world,
                     cluster_outputs(world.values, selected_config),
+                )
+                for world in validation_worlds
+            ]
+        )
+    elif selected["family"] == "windowed_directional_quorum":
+        selected_config = WindowedQuorumDirectionalConfig(
+            **selected["config"]
+        )
+        validation_selected = summarize(
+            [
+                evaluate(
+                    world,
+                    quorum_outputs(world.values, selected_config),
                 )
                 for world in validation_worlds
             ]
@@ -479,9 +533,11 @@ def tune() -> dict:
         },
         "multiscale_log_e_grid_size": len(MULTISCALE_GRID),
         "bounded_tail_cluster_grid_size": len(SPARSE_CLUSTER_GRID),
+        "windowed_quorum_grid_size": len(WINDOWED_QUORUM_GRID),
         "stage17_tuning_block": stage17_summary,
         "selected_multiscale_log_e": selected_multiscale,
         "selected_bounded_tail_cluster": selected_cluster,
+        "selected_windowed_quorum": selected_quorum,
         "selected_detector": selected,
         "synthetic_validation": {
             "stage17_directional": validation_stage17,
