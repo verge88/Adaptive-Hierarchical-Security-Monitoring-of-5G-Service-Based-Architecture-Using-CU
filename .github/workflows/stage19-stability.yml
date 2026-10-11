@@ -1,0 +1,38 @@
+name: Stage19 stability-gated sparse development
+
+on:
+  push:
+    branches: ['stage19/multiscale-directional-memory']
+    paths:
+      - 'research/stage19_stability_develop.py'
+      - 'research/stage19_detector.py'
+      - 'stage19_tests/**'
+      - '.github/workflows/stage19-stability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Stage19 invariants
+        run: |
+          python -m compileall -q research stage19_tests
+          python -m unittest discover -s stage19_tests -v
+      - name: Tune stability-gated quorum and run both validation regimes
+        run: python -m research.stage19_stability_develop --output stage19_stability_development.json
+      - name: Publish stability-gated development result
+        run: cat stage19_stability_development.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload development result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage19-stability-development
+          path: stage19_stability_development.json
+          retention-days: 30
