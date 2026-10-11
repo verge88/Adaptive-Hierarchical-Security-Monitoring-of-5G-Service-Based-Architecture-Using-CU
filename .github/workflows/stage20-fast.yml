@@ -1,0 +1,33 @@
+name: Stage20 exact fast development
+
+on:
+  push:
+    branches: ['stage20/competitive-directional-e']
+    paths:
+      - 'research/stage20_fast_develop.py'
+      - '.github/workflows/stage20-fast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop-fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m compileall -q research
+      - name: Run exact trace-replay selection
+        run: python -m research.stage20_fast_develop --output stage20_fast_development.json
+      - name: Publish selection
+        run: cat stage20_fast_development.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage20-fast-development
+          path: stage20_fast_development.json
+          retention-days: 30
