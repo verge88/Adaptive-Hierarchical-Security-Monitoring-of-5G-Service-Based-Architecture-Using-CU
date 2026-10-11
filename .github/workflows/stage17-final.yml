@@ -1,0 +1,42 @@
+name: Stage17 final untouched evaluation
+
+on:
+  push:
+    branches: ['stage17/drift-adaptive-eph']
+    paths:
+      - 'research/stage17_*.py'
+      - 'stage17/**'
+      - 'stage17_tests/**'
+      - '.github/workflows/stage17-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-evaluation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check syntax
+        run: python -m compileall -q research stage17_tests
+      - name: Run Stage17 invariants and frozen-protocol tests
+        run: python -m unittest discover -s stage17_tests -v
+      - name: Run single predeclared final block
+        run: python -m research.stage17_final --start-seed 7001 --seeds 200 --output stage17_final_results
+      - name: Publish final report
+        run: cat stage17_final_results/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw final results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage17-final-untouched
+          path: stage17_final_results/
+          if-no-files-found: warn
+          retention-days: 30
