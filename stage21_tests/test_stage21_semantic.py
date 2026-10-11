@@ -48,6 +48,7 @@ class Stage21SemanticTests(unittest.TestCase):
             required_hits=3,
             min_mismatched_paths=1,
             large_mismatched_paths=5,
+            recovery_clean_ticks=2,
         )
         state = SemanticQuorumState(pairs, config)
         self.assertTrue(state.enabled)
