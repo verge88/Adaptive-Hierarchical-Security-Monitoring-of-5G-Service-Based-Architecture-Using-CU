@@ -380,3 +380,44 @@ were developed under different drift/noise/fault regimes.
 Full methodology and tables: **stage21/ABLATION.md**.
 
 Seeds **8701..8764** are now evaluation-only and forbidden for future tuning.
+
+
+## Clustered time-to-detection analysis
+
+A separate timing analysis was performed on the frozen **128-run replication**
+(seeds **8501..8628**, **1,536** primary episodes) without any detector
+retuning.
+
+Canonical analysis run: **38165599584**  
+Analysis SHA: **1ee19a419613875159036f9fcc01c2021f2a58e2**  
+Result artifact: **stage21-time-to-detection-128-run-report**  
+Artifact ID: **11711972041**
+
+Uncertainty was estimated with **20,000 nonparametric bootstrap resamples over
+whole independent Open5GS runners**.
+
+Key endpoints:
+
+- Stage 20 recall: **0.285 [0.276, 0.294]**
+- Stage 21 recall: **1.000 [1.000, 1.000]**
+- Stage 20 restricted mean time to detection: **9.58 [9.53, 9.62] ticks**
+- Stage 21 restricted mean time to detection: **5.74 [5.64, 5.84] ticks**
+- paired RMST difference: **-3.84 ticks**, 95% CI **[-3.94, -3.74]**
+- Stage 21 reaches 50% cumulative detection by **tick 6**
+- Stage 20 never reaches 50% cumulative detection within the 12-tick horizon
+- by tick 11: Stage 20 cumulative detection **0.285**, Stage 21 **1.000**
+
+The detected-only median is deliberately not used as the primary speed
+comparison. Stage 20 has median delay 0 among the small subset of attacks it
+detects, while Stage 21 has median delay 6 while detecting all primary attacks.
+This illustrates conditioning/selection bias rather than Stage-20 superiority.
+
+All methods had **0 observed false alarms over 10,752 clean live ticks** and
+**0/128 runners** with any false alarm. Because the runner bootstrap is then
+degenerate at zero, an exact one-sided runner-level bound is also reported:
+the 95% upper bound on the probability that a new independent runner contains
+at least one false alarm is **0.0231**. This is not interpreted as a per-tick
+production guarantee.
+
+Full methodology, cumulative detection table and paper-ready interpretation are
+in **stage21/TIME_TO_DETECTION.md**.
