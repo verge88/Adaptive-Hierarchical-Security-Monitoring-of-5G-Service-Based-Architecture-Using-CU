@@ -1,0 +1,141 @@
+{
+  "schema_version": "1.0",
+  "model_id": "stage21-trust-model",
+  "scope": "Frozen Stage-21 Open5GS integrity-monitoring validation",
+  "security_goal": "Detect observable divergence between a consumer-visible SBI representation and a nearby trusted reference representation when the attacker cannot control the reference or detector.",
+  "not_a_truth_oracle": true,
+  "trust_levels": [
+    {
+      "id": "L0",
+      "name": "Experimental evaluation integrity",
+      "claim": "Private attack labels are unavailable to the blind detector and are joined only after detection."
+    },
+    {
+      "id": "L1",
+      "name": "Post-common-path branch integrity",
+      "claim": "Current live Open5GS validation: native NRF and SCP are trusted common infrastructure; the adversary can modify only the consumer-facing copy after the genuine SCP->NRF transaction."
+    },
+    {
+      "id": "L2",
+      "name": "Independent-observer node-compromise model",
+      "claim": "Target framework: a compromised reporting node may lie, but at least one comparison observation must be generated outside that node's control.",
+      "validated_by_current_live_stage21": false
+    },
+    {
+      "id": "L3",
+      "name": "Multi-point Byzantine/common-mode compromise",
+      "claim": "Attacker controls both report and trusted reference, or controls common infrastructure feeding both observations.",
+      "in_scope": false
+    }
+  ],
+  "entities": [
+    {
+      "id": "native_nrf",
+      "role": "Native Open5GS Network Repository Function and source of discovery responses",
+      "current_lab_trust": "trusted",
+      "attacker_control_current_lab": false
+    },
+    {
+      "id": "native_scp",
+      "role": "Native Open5GS Service Communication Proxy used by both reference and consumer requests",
+      "current_lab_trust": "trusted",
+      "attacker_control_current_lab": false
+    },
+    {
+      "id": "trusted_reference_request",
+      "role": "Nearby independent request through genuine native SCP->NRF used as comparison observation",
+      "current_lab_trust": "trusted with respect to post-SCP consumer mutation",
+      "shares_common_infrastructure_with_consumer": true,
+      "attacker_control_current_lab": false
+    },
+    {
+      "id": "consumer_post_scp_branch",
+      "role": "Consumer-visible response copy after the genuine native SCP response",
+      "current_lab_trust": "adversary-controlled research fault domain",
+      "attacker_control_current_lab": true
+    },
+    {
+      "id": "stage21_detector",
+      "role": "Frozen multi-channel detector receiving label-free paired telemetry",
+      "current_lab_trust": "trusted",
+      "attacker_control_current_lab": false
+    },
+    {
+      "id": "private_labels",
+      "role": "Evaluation-only ground truth used after blind detection",
+      "current_lab_trust": "audit-only",
+      "available_to_detector": false
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "Native Open5GS NRF and SCP binaries are not modified or compromised in the Stage-21 live experiment."
+    },
+    {
+      "id": "A2",
+      "text": "The attacker cannot alter the trusted-reference request, its response after the trusted observation point, or detector state."
+    },
+    {
+      "id": "A3",
+      "text": "The consumer and reference requests may observe benign temporal differences because they are separate nearby requests; stability gating is used to avoid treating volatile paths as trusted semantic invariants."
+    },
+    {
+      "id": "A4",
+      "text": "The research attacker may choose sparse or persistent payload mutations on the consumer branch, including value substitution, field deletion and profile removal."
+    },
+    {
+      "id": "A5",
+      "text": "No collusion or simultaneous compromise of both the consumer branch and trusted-reference branch is assumed."
+    },
+    {
+      "id": "A6",
+      "text": "Deterministic SHA-256 semantic tokens are equality tokens only; they are not message authentication codes and no privacy guarantee is claimed."
+    },
+    {
+      "id": "A7",
+      "text": "Label separation is an experimental-validity property, not an operational security mechanism."
+    }
+  ],
+  "observability_condition": {
+    "statement": "An attack is observable only if it creates a difference in at least one enabled monitored representation between trusted reference and consumer view, and the corresponding frozen sequential rule reaches its alarm condition.",
+    "common_mode_failure": "If both observations contain the same false state, pairwise reconciliation alone cannot establish that the common state is false.",
+    "representation_invariance_failure": "If the attacker changes semantics while preserving all monitored representations, the detector cannot observe that change."
+  },
+  "tested_attack_classes": [
+    {
+      "class": "structure-preserving scalar-value substitution",
+      "current_live_evidence": "covered",
+      "stage21_replication_recall": 1.0
+    },
+    {
+      "class": "sparse structural leaf deletion",
+      "current_live_evidence": "covered",
+      "stage21_replication_recall": 1.0
+    },
+    {
+      "class": "persistent profile removal",
+      "current_live_evidence": "covered",
+      "stage21_replication_recall": 1.0
+    },
+    {
+      "class": "cross-profile identity swap preserving normalized per-path value multiset",
+      "current_live_evidence": "known blind spot",
+      "stage21_replication_recall": 0.0
+    }
+  ],
+  "out_of_scope_or_not_established": [
+    "Compromise of native Open5GS SCP itself",
+    "Compromise of NRF or any other common source that can make reference and consumer views identically false",
+    "Compromise of the trusted reference collector",
+    "Collusion between compromised reporting and reference points",
+    "Production mutual-TLS, OAuth and SEPP trust chains",
+    "Arbitrary transport denial-of-service and timing attacks",
+    "Relational/cross-entity semantics preserved by per-path multiset projections",
+    "Truth of the underlying network state when both paired observations agree"
+  ],
+  "claim_boundary": {
+    "allowed": "Stage 21 validates detection of consumer-branch integrity divergence after a genuine native Open5GS SCP->NRF path under a trusted-reference assumption.",
+    "forbidden_overclaim": "Stage 21 proves detection of a compromised native SCP, compromised NRF, or arbitrary Byzantine multi-point attacker."
+  }
+}
