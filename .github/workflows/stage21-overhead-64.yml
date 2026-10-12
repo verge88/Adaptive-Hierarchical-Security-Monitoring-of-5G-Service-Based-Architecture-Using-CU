@@ -1,0 +1,121 @@
+name: Stage21 clean monitoring overhead (64 Open5GS runners)
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage21_overhead.py'
+      - 'research/stage21_overhead_report.py'
+      - '.github/workflows/stage21-overhead-64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Compile frozen overhead benchmark
+        run: |
+          python -m py_compile             research/stage21_overhead.py             research/stage21_overhead_report.py
+          python - <<'PY'
+          from research.stage21_live_detect import FROZEN_STAGE21
+          assert FROZEN_STAGE21.__dict__ == {
+              "paired_agreement_threshold": 0.98,
+              "temporal_stability_threshold": 0.90,
+              "window_ticks": 16,
+              "required_hits": 3,
+              "min_mismatched_paths": 1,
+              "large_mismatched_paths": 3,
+              "recovery_clean_ticks": 2,
+          }
+          print("FROZEN_STAGE21_OVERHEAD_PROTOCOL_OK")
+          PY
+
+  benchmark:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Record runner environment
+        run: |
+          mkdir -p diagnostics
+          python --version > diagnostics/python.txt
+          uname -a > diagnostics/uname.txt
+          lscpu > diagnostics/lscpu.txt || true
+          free -b > diagnostics/memory.txt || true
+      - name: Validate native Open5GS SCP compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml config -q
+      - name: Start genuine Open5GS v2.7.6 NRF NSSF AUSF SCP binaries
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml up -d --pull always
+      - name: Verify native NRF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Run clean Stage21 overhead benchmark
+        run: |
+          python -m research.stage21_overhead             --seed $((8801 + ${{ matrix.shard }}))             --output stage21_overhead
+      - name: Capture Open5GS diagnostics
+        if: always()
+        run: |
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml logs --no-color > diagnostics/native_open5gs.log 2>&1 || true
+      - name: Upload overhead runner result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-overhead-${{ matrix.shard }}
+          path: |
+            stage21_overhead/
+            diagnostics/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml down --remove-orphans || true
+
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all overhead runners
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage21-overhead-*
+          path: stage21_overhead_batches
+      - name: Verify all 64 runner results
+        run: |
+          COUNT="$(find stage21_overhead_batches -name overhead.json | wc -l)"
+          echo "overhead_results=$COUNT"
+          test "$COUNT" -eq 64
+      - name: Compute runner-cluster overhead summary
+        run: |
+          python -m research.stage21_overhead_report             --input stage21_overhead_batches             --output stage21_overhead_report
+      - name: Publish overhead report
+        run: cat stage21_overhead_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited overhead report
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-64-run-monitoring-overhead-report
+          path: stage21_overhead_report/
+          retention-days: 90

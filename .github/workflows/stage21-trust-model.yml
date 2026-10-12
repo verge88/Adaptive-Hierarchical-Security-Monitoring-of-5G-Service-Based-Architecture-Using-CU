@@ -1,0 +1,38 @@
+name: Stage21 trust-model consistency audit
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'stage21/TRUST_MODEL.md'
+      - 'stage21/trust_model.json'
+      - 'research/stage21_trust_audit.py'
+      - 'research/stage21_gateway.py'
+      - 'research/stage21_capture.py'
+      - 'research/stage21_live_detect.py'
+      - '.github/workflows/stage21-trust-model.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trust-model-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile trust-model audit
+        run: python -m py_compile research/stage21_trust_audit.py
+      - name: Check trust assumptions against evaluated architecture
+        run: |
+          mkdir -p stage21_trust_audit
+          python -m research.stage21_trust_audit             | tee stage21_trust_audit/audit.json
+      - name: Upload trust-model audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-trust-model-audit
+          path: stage21_trust_audit/
+          retention-days: 90

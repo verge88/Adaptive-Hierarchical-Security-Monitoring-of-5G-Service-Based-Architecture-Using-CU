@@ -1,0 +1,56 @@
+name: Stage21 clustered time-to-detection statistics
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage21_time_to_detection.py'
+      - '.github/workflows/stage21-time-to-detection.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile time-to-detection analysis
+        run: python -m py_compile research/stage21_time_to_detection.py
+      - name: Download every frozen label/alarm artifact by exact name
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p stage21_rep_batches
+          for i in $(seq 0 127); do
+            gh run download 38160873208               -n "stage21-rep-labels-$i"               -D "stage21_rep_batches/stage21-rep-labels-$i"
+            gh run download 38160873208               -n "stage21-rep-alarms-$i"               -D "stage21_rep_batches/stage21-rep-alarms-$i"
+          done
+      - name: Verify all 128 exact label/alarm pairs are present
+        run: |
+          LABELS="$(find stage21_rep_batches -name private_labels.json | wc -l)"
+          ALARMS="$(find stage21_rep_batches -name alarms.json | wc -l)"
+          echo "labels=$LABELS alarms=$ALARMS"
+          test "$LABELS" -eq 128
+          test "$ALARMS" -eq 128
+          for i in $(seq 0 127); do
+            test -f "stage21_rep_batches/stage21-rep-labels-$i/private_labels.json"
+            test -f "stage21_rep_batches/stage21-rep-alarms-$i/alarms.json"
+          done
+      - name: Compute clustered time-to-detection statistics
+        run: |
+          python -m research.stage21_time_to_detection             --input stage21_rep_batches             --output stage21_time_to_detection
+      - name: Publish time-to-detection report
+        run: cat stage21_time_to_detection/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload time-to-detection analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-time-to-detection-128-run-report
+          path: stage21_time_to_detection/
+          retention-days: 90

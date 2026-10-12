@@ -1,0 +1,157 @@
+name: Stage21 128-run frozen Open5GS replication
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage21_replication_report.py'
+      - '.github/workflows/stage21-replication-128.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Prove frozen Stage21 detector still compiles and passes invariants
+        run: |
+          python -m compileall -q research stage21_tests
+          python -m unittest stage21_tests.test_stage21_live -v
+          python - <<'PY'
+          from research.stage21_live_detect import FROZEN_STAGE21
+          expected = {
+              "paired_agreement_threshold": 0.98,
+              "temporal_stability_threshold": 0.90,
+              "window_ticks": 16,
+              "required_hits": 3,
+              "min_mismatched_paths": 1,
+              "large_mismatched_paths": 3,
+              "recovery_clean_ticks": 2,
+          }
+          assert FROZEN_STAGE21.__dict__ == expected
+          print("FROZEN_STAGE21_OK", expected)
+          PY
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate native Open5GS SCP compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml config -q
+      - name: Start genuine Open5GS v2.7.6 NRF NSSF AUSF SCP binaries
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml up -d --pull always
+      - name: Verify native NRF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Capture new evaluation-only replication runner
+        run: |
+          python -m research.stage21_capture             --seed $((8501 + ${{ matrix.shard }}))             --telemetry-output stage21_rep_telemetry             --labels-output stage21_rep_private_labels
+      - name: Capture Open5GS provenance
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml logs --no-color > diagnostics/native_open5gs.log 2>&1 || true
+      - name: Upload label-free replication telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-rep-telemetry-${{ matrix.shard }}
+          path: |
+            stage21_rep_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE replication labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-rep-labels-${{ matrix.shard }}
+          path: stage21_rep_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: capture
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 64
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY replication telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage21-rep-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove private labels are absent
+        run: |
+          if find detector_input -name 'private_labels.json' | grep -q .; then
+            echo "Private labels leaked into Stage21 replication detector job"
+            exit 1
+          fi
+      - name: Locate telemetry
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+      - name: Run unchanged frozen Stage21 detector blind
+        run: |
+          python -m research.stage21_live_detect             --telemetry "${{ steps.telemetry.outputs.path }}"             --output stage21_rep_detector
+      - name: Upload blind replication alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-rep-alarms-${{ matrix.shard }}
+          path: stage21_rep_detector/
+          retention-days: 30
+
+  audit:
+    needs: [capture, blind-detect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all 128-run artifacts only after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage21-rep-*
+          path: stage21_rep_batches
+      - name: Join labels post-hoc and compute 128-run cluster effects
+        run: |
+          python -m research.stage21_replication_report             --input stage21_rep_batches             --output stage21_replication_report
+      - name: Publish replication report
+        run: cat stage21_replication_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited 128-run replication
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-128-run-open5gs-replication-report
+          path: stage21_replication_report/
+          retention-days: 90

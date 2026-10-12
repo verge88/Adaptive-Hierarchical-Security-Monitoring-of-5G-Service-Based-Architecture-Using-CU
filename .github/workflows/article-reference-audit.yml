@@ -1,0 +1,47 @@
+name: Final article literature-freeze audit
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'article/references_verified.json'
+      - 'article/LITERATURE_AUDIT_RU.md'
+      - 'article/LITERATURE_MATRIX_RU.md'
+      - 'research/article_reference_audit.py'
+      - '.github/workflows/article-reference-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reference-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile audit
+        run: python -m py_compile research/article_reference_audit.py
+      - name: Validate frozen literature registry
+        run: |
+          mkdir -p article_reference_audit
+          python -m research.article_reference_audit             | tee article_reference_audit/audit.json
+      - name: Verify novelty matrix and audit documents exist
+        run: |
+          test -s article/LITERATURE_AUDIT_RU.md
+          test -s article/LITERATURE_MATRIX_RU.md
+          grep -q "Oracle WO2025250353A1" article/LITERATURE_AUDIT_RU.md
+          grep -q "5G-RAD" article/LITERATURE_MATRIX_RU.md
+          grep -q "рассмотренного корпуса" article/LITERATURE_MATRIX_RU.md
+      - name: Upload frozen literature audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-article-literature-audit
+          path: |
+            article_reference_audit/
+            article/references_verified.json
+            article/LITERATURE_AUDIT_RU.md
+            article/LITERATURE_MATRIX_RU.md
+          retention-days: 90

@@ -1,0 +1,53 @@
+name: Stage21 semantic-integrity development
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage21_semantic.py'
+      - 'research/stage21_develop.py'
+      - 'stage21_tests/**'
+      - '.github/workflows/stage21-development.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Compile and test
+        run: |
+          python -m compileall -q research stage21_tests
+          python -m unittest discover -s stage21_tests -v
+      - name: Run conservative semantic development
+        run: |
+          python -m research.stage21_develop             --output stage21_development.json
+      - name: Publish development summary
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("stage21_development.json"))
+          s=d["selected_detector"]
+          v=d["stable_validation"]
+          r=d["race_stress"]
+          print("## Stage21 semantic development")
+          print()
+          print("Selected:", s["config"])
+          print("Stable validation:", v)
+          print("Race stress:", r)
+          PY
+      - name: Upload development result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage21-semantic-development
+          path: stage21_development.json
+          retention-days: 90

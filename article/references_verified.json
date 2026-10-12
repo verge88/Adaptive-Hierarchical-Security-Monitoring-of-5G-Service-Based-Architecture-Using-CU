@@ -1,0 +1,498 @@
+{
+  "freeze_date": "2026-10-12",
+  "scope": "Targeted nearest-prior-art and bibliographic audit for final 5G SBA integrity-monitoring article",
+  "standards_policy": "Pin stable Release-18 versions used as architectural/security references; list TS 29.570 Release-19 separately as newer SCP-services context, not as an Open5GS compatibility claim.",
+  "references": [
+    {
+      "id": "3GPP-23501-R18",
+      "type": "standard",
+      "title": "System architecture for the 5G System (5GS)",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2025,
+      "venue": "3GPP TS 23.501",
+      "release": "18",
+      "version": "18.12.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3144",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-29500-R18",
+      "type": "standard",
+      "title": "5G System; Technical Realization of Service Based Architecture; Stage 3",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2026,
+      "venue": "3GPP TS 29.500",
+      "release": "18",
+      "version": "18.10.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3338",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-29501-R18",
+      "type": "standard",
+      "title": "5G System; Principles and Guidelines for Services Definition; Stage 3",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2025,
+      "venue": "3GPP TS 29.501",
+      "release": "18",
+      "version": "18.7.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3341",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-29510-R18",
+      "type": "standard",
+      "title": "5G System; Network function repository services; Stage 3",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2026,
+      "venue": "3GPP TS 29.510",
+      "release": "18",
+      "version": "18.11.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3345",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-33501-R18",
+      "type": "standard",
+      "title": "Security architecture and procedures for 5G System",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2026,
+      "venue": "3GPP TS 33.501",
+      "release": "18",
+      "version": "18.12.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3169",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-33522-R18",
+      "type": "standard",
+      "title": "5G Security Assurance Specification (SCAS); Service Communication Proxy (SCP)",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2023,
+      "venue": "3GPP TS 33.522",
+      "release": "18",
+      "version": "18.0.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3750",
+      "status": "normative"
+    },
+    {
+      "id": "3GPP-29570-R19",
+      "type": "standard",
+      "title": "5G System; Service Communication Proxy Services; Stage 3",
+      "authors": [
+        "3GPP"
+      ],
+      "year": 2026,
+      "venue": "3GPP TS 29.570",
+      "release": "19",
+      "version": "19.3.0",
+      "url": "https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=4389",
+      "status": "newer-context-only"
+    },
+    {
+      "id": "NIST-CSWP36E",
+      "type": "guidance",
+      "title": "5G Network Security Design Principles: Applying 5G Cybersecurity and Privacy Capabilities",
+      "authors": [
+        "Michael Bartock",
+        "Jeffrey Cichonski",
+        "Murugiah Souppaya",
+        "Karen Kent",
+        "Parisa Grayeli",
+        "Sanjeev Sharma"
+      ],
+      "year": 2026,
+      "venue": "NIST Cybersecurity White Paper 36E",
+      "doi": "10.6028/NIST.CSWP.36E",
+      "url": "https://csrc.nist.gov/pubs/cswp/36/e/5g-network-security-design-principles/final",
+      "status": "final"
+    },
+    {
+      "id": "TANG-2022",
+      "type": "journal",
+      "title": "A Systematic Analysis of 5G Networks With a Focus on 5G Core Security",
+      "authors": [
+        "Qiang Tang",
+        "Orhan Ermis",
+        "Cu D. Nguyen",
+        "Alexandre De Oliveira",
+        "Alain Hirtzig"
+      ],
+      "year": 2022,
+      "venue": "IEEE Access",
+      "volume": "10",
+      "pages": "18298-18319",
+      "doi": "10.1109/ACCESS.2022.3151000",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "MADI-2021",
+      "type": "journal",
+      "title": "NFV security survey in 5G networks: A three-dimensional threat taxonomy",
+      "authors": [
+        "Taous Madi",
+        "Hyame Assem Alameddine",
+        "Makan Pourzandi",
+        "Amine Boukhtouta"
+      ],
+      "year": 2021,
+      "venue": "Computer Networks",
+      "volume": "197",
+      "article": "108288",
+      "doi": "10.1016/j.comnet.2021.108288",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "HOQ-2023",
+      "type": "conference-chapter",
+      "title": "Evaluating the Security Posture of 5G Networks by Combining State Auditing and Event Monitoring",
+      "authors": [
+        "Md Nazmul Hoq",
+        "Jia Wei Yao",
+        "Suryadipta Majumdar",
+        "Luis Suárez",
+        "Lingyu Wang",
+        "Amine Boukhtouta",
+        "Makan Pourzandi",
+        "Mourad Debbabi"
+      ],
+      "year": 2024,
+      "conference_year": 2023,
+      "venue": "Computer Security – ESORICS 2023, LNCS 14345",
+      "pages": "123-144",
+      "doi": "10.1007/978-3-031-51476-0_7",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "LI-5GRAD-2023",
+      "type": "conference",
+      "title": "A Runtime Anomaly Detector via Service Communication Proxy for 5G Mobile Networks",
+      "authors": [
+        "Yin-Chi Li",
+        "Ping-Tsan Liu",
+        "Yi-An Tai",
+        "Che-Hung Liu",
+        "Man-Hsin Chen",
+        "Chi-Yu Li",
+        "Guan-Hua Tu"
+      ],
+      "year": 2023,
+      "venue": "IEEE INFOCOM 2023 Workshops",
+      "doi": "10.1109/INFOCOMWKSHPS57453.2023.10226155",
+      "status": "peer-reviewed",
+      "pages": "1-2"
+    },
+    {
+      "id": "THORN-5GAC-2024",
+      "type": "conference",
+      "title": "5GAC-Analyzer: Identifying Over-Privilege Between 5G Core Network Functions",
+      "authors": [
+        "Seaver Thorn",
+        "K. Virgil English",
+        "Kevin R. B. Butler",
+        "William Enck"
+      ],
+      "year": 2024,
+      "venue": "ACM WiSec 2024",
+      "pages": "66-77",
+      "doi": "10.1145/3643833.3656134",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "PACHERKAR-PROV5GC-2024",
+      "type": "conference",
+      "title": "PROV5GC: Hardening 5G Core Network Security with Attack Detection and Attribution Based on Provenance Graphs",
+      "authors": [
+        "Harsh Sanjay Pacherkar",
+        "Guanhua Yan"
+      ],
+      "year": 2024,
+      "venue": "ACM WiSec 2024",
+      "pages": "254-264",
+      "doi": "10.1145/3643833.3656129",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "WEHBE-2025",
+      "type": "journal",
+      "title": "Empowering 5G SBA security: Time series transformer for HTTP/2 anomaly detection",
+      "authors": [
+        "N. Wehbe",
+        "H. A. Alameddine",
+        "M. Pourzandi",
+        "C. Assi"
+      ],
+      "year": 2025,
+      "venue": "Computers & Security",
+      "volume": "148",
+      "article": "104114",
+      "doi": "10.1016/j.cose.2024.104114",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "HU-5GCID-2025",
+      "type": "journal",
+      "title": "5GCID: Dataset of 5GC intrusion detection system",
+      "authors": [
+        "Yangliu Hu",
+        "Qian Sun",
+        "Tianbin Dang",
+        "Guangzhi Wu",
+        "Lin Tian"
+      ],
+      "year": 2025,
+      "venue": "Computer Communications",
+      "volume": "247",
+      "article": "108375",
+      "doi": "10.1016/j.comcom.2025.108375",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "MANCA-SAGE5GC-2026",
+      "type": "conference",
+      "title": "SAGE-5GC: Security-Aware Guidelines for Evaluating Anomaly Detection in the 5G Core Network",
+      "authors": [
+        "Cristian Manca",
+        "Christian Scano",
+        "Giorgio Piras",
+        "Fabio Brau",
+        "Maura Pintor",
+        "Battista Biggio"
+      ],
+      "year": 2026,
+      "venue": "ITASEC & SERICS 2026, CEUR Workshop Proceedings 4198",
+      "arxiv": "2602.03596",
+      "url": "https://ceur-ws.org/Vol-4198/",
+      "status": "peer-reviewed-conference"
+    },
+    {
+      "id": "MANIAS-DRIFT-2022",
+      "type": "conference",
+      "title": "A Model Drift Detection and Adaptation Framework for 5G Core Networks",
+      "authors": [
+        "Dimitrios Michael Manias",
+        "Ali Chouman",
+        "Abdallah Shami"
+      ],
+      "year": 2022,
+      "venue": "IEEE MeditCom 2022",
+      "pages": "197-202",
+      "doi": "10.1109/MeditCom55741.2022.9928667",
+      "arxiv": "2209.06852",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "PAGE-1954",
+      "type": "journal",
+      "title": "Continuous Inspection Schemes",
+      "authors": [
+        "E. S. Page"
+      ],
+      "year": 1954,
+      "venue": "Biometrika",
+      "volume": "41",
+      "issue": "1/2",
+      "pages": "100-115",
+      "doi": "10.1093/biomet/41.1-2.100",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "BIFET-ADWIN-2007",
+      "type": "conference",
+      "title": "Learning from Time-Changing Data with Adaptive Windowing",
+      "authors": [
+        "Albert Bifet",
+        "Ricard Gavaldà"
+      ],
+      "year": 2007,
+      "venue": "SIAM International Conference on Data Mining (SDM)",
+      "pages": "443-448",
+      "doi": "10.1137/1.9781611972771.42",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "VOVK-2021",
+      "type": "conference",
+      "title": "Retrain or not retrain: conformal test martingales for change-point detection",
+      "authors": [
+        "Vladimir Vovk",
+        "Ivan Petej",
+        "Ilia Nouretdinov",
+        "Ernst Ahlberg",
+        "Lars Carlsson",
+        "Alex Gammerman"
+      ],
+      "year": 2021,
+      "venue": "PMLR 152, COPA 2021",
+      "pages": "191-210",
+      "url": "https://proceedings.mlr.press/v152/vovk21b.html",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "SHIN-EDETECTORS-2024",
+      "type": "journal",
+      "title": "E-detectors: A Nonparametric Framework for Sequential Change Detection",
+      "authors": [
+        "Jaehyeok Shin",
+        "Aaditya Ramdas",
+        "Alessandro Rinaldo"
+      ],
+      "year": 2024,
+      "online_year": 2023,
+      "venue": "The New England Journal of Statistics in Data Science",
+      "volume": "2",
+      "issue": "2",
+      "pages": "229-260",
+      "doi": "10.51387/23-NEJSDS51",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "WANG-NING-2024",
+      "type": "journal",
+      "title": "Nonparametric Shiryaev-Roberts change-point detection procedures based on modified empirical likelihood",
+      "authors": [
+        "Peiyao Wang",
+        "Wei Ning"
+      ],
+      "year": 2024,
+      "venue": "Journal of Applied Statistics",
+      "volume": "51",
+      "issue": "13",
+      "pages": "2558-2591",
+      "doi": "10.1080/02664763.2024.2307532",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "BHATTACHARYYA-RAMDAS-2026",
+      "type": "preprint",
+      "title": "Change detection with conformal martingales: new optimal constructions, and suboptimality of existing methods",
+      "authors": [
+        "Swapnaneel Bhattacharyya",
+        "Aaditya Ramdas"
+      ],
+      "year": 2026,
+      "venue": "arXiv",
+      "arxiv": "2609.27179",
+      "status": "preprint"
+    },
+    {
+      "id": "ELIADES-2026",
+      "type": "conference",
+      "title": "Multivariate Change-Point Detection Using Feature-Based Inductive Conformal Martingales",
+      "authors": [
+        "Charalambos Eliades",
+        "Harris Papadopoulos"
+      ],
+      "year": 2026,
+      "venue": "PMLR 329, COPA 2026",
+      "pages": "633-651",
+      "url": "https://proceedings.mlr.press/v329/eliades26a.html",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "SHAER-2026",
+      "type": "conference",
+      "title": "Testing For Distribution Shifts with Conditional Conformal Test Martingales",
+      "authors": [
+        "Shalev Shaer",
+        "Yarin Bar",
+        "Drew Prinster",
+        "Yaniv Romano"
+      ],
+      "year": 2026,
+      "venue": "ICML 2026, PMLR 306",
+      "pages": "109447-109469",
+      "url": "https://proceedings.mlr.press/v306/shaer26a.html",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "LEVI-DUBIN-2026",
+      "type": "preprint",
+      "title": "API Security Based on Automatic OpenAPI Mapping",
+      "authors": [
+        "Yarin Levi",
+        "Ran Dubin"
+      ],
+      "year": 2026,
+      "venue": "arXiv",
+      "arxiv": "2604.19471",
+      "status": "preprint"
+    },
+    {
+      "id": "ORACLE-SCP-INTEGRITY-2025",
+      "type": "patent",
+      "title": "Methods, systems, and computer readable media for providing end-to-end message integrity checking for service-based interface (SBI) messages communicated via a service communication proxy (SCP)",
+      "authors": [
+        "Jay Rajput",
+        "Virendra Singh",
+        "Shashikiran Bhalachandra Mahalank"
+      ],
+      "year": 2025,
+      "venue": "WO2025250353A1",
+      "priority_date": "2024-05-28",
+      "filing_date": "2025-05-14",
+      "publication_date": "2025-12-04",
+      "assignee": "Oracle International Corp",
+      "url": "https://patents.google.com/patent/WO2025250353A1/en",
+      "status": "patent-application-published"
+    },
+    {
+      "id": "CHO-5G-KPI-2025",
+      "type": "conference",
+      "title": "A Framework for AI-Based Large-Scale Time-Series Anomaly Detection in 5G Core Networks",
+      "authors": [
+        "Yeon-Jea Cho",
+        "Hong-Jae Lee",
+        "A-Sol Choi",
+        "Do-Young Kwak",
+        "J. Chung"
+      ],
+      "year": 2025,
+      "venue": "16th International Conference on ICT Convergence (ICTC 2025)",
+      "pages": "509-514",
+      "doi": "10.1109/ICTC66702.2025.11388910",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "GONG-SURVEY-2025",
+      "type": "journal",
+      "title": "A survey of existing attacks on 5G SA",
+      "authors": [
+        "Mengyi Gong",
+        "Ziling Wei",
+        "Shuhui Chen",
+        "Wanrong Yu",
+        "Fei Wang"
+      ],
+      "year": 2025,
+      "venue": "Computer Networks",
+      "volume": "270",
+      "article": "111545",
+      "doi": "10.1016/j.comnet.2025.111545",
+      "status": "peer-reviewed"
+    },
+    {
+      "id": "CURRENT-WORK",
+      "type": "current-work",
+      "title": "Multi-channel sequential integrity monitoring for 5G SBA using paired observations, stability-gated sparse memory, structural reconciliation and stable-value semantic reconciliation",
+      "authors": [
+        "Project authors"
+      ],
+      "year": 2026,
+      "venue": "Current manuscript / Open5GS validation",
+      "status": "current-work"
+    }
+  ]
+}

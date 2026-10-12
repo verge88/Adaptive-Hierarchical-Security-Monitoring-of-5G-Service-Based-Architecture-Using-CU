@@ -1,0 +1,24 @@
+name: Article publication nomenclature guard
+
+on:
+  push:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'article/EXPERIMENTAL_PROGRAM_RU.md'
+      - 'research/article_nomenclature_check.py'
+      - '.github/workflows/article-nomenclature.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check publication-facing experiment terminology
+        run: python -m research.article_nomenclature_check
