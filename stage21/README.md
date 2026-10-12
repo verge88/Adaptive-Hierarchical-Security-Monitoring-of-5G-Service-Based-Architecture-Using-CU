@@ -481,3 +481,59 @@ Full methodology and paper-ready interpretation:
 **stage21/OVERHEAD.md**.
 
 Seeds **8801..8864** are now evaluation-only and forbidden for future tuning.
+
+
+## Formal trust and attacker model
+
+The Stage-21 trust boundary is now frozen explicitly in
+**stage21/TRUST_MODEL.md** with a machine-readable counterpart in
+**stage21/trust_model.json**.
+
+The model distinguishes four levels:
+
+- **L0 — evaluation integrity:** private attack labels are unavailable to the
+  blind detector;
+- **L1 — post-common-path branch integrity:** the actually validated live
+  Open5GS model. Native NRF/SCP are trusted and unmodified; only the
+  consumer-facing copy after the genuine SCP->NRF response is adversary
+  controlled;
+- **L2 — independent-observer node-compromise model:** the target
+  master/slave monitoring concept, where a compromised reporting node is
+  compared against an observation generated outside its control. This stronger
+  case is conceptually supported but is **not** directly established by the
+  current live Stage-21 experiment;
+- **L3 — multi-point Byzantine/common-mode compromise:** attacker control of
+  both observations or of infrastructure common to both. This is out of scope.
+
+The critical claim boundary is:
+
+> Stage 21 validates detection of observable consumer-branch integrity
+> divergence after a genuine native Open5GS SCP->NRF path under a trusted
+> reference assumption. It does not establish detection of a compromised native
+> SCP, compromised NRF, or arbitrary colluding multi-point attacker.
+
+The model also states explicitly that paired reconciliation is **not a truth
+oracle**. If both reference and consumer observations carry the same false
+state, or if an attack preserves every monitored representation, reconciliation
+alone cannot prove the state false.
+
+The preregistered cross-profile identity-swap boundary is retained as the
+concrete representation-invariance example: Stage-21 recall remains **0.000**
+because the current normalized per-path semantic multiset loses entity
+relationships.
+
+A static consistency audit prevents the trust document from silently drifting
+away from the evaluated code architecture:
+
+- canonical audit run: **38266079919**
+- audit head SHA: **7eeef446cfcfc434bbf6a24cc122e1a38f89853b**
+- result: **PASS**
+- artifact: **stage21-trust-model-audit**
+- artifact ID: **11755006315**
+- artifact SHA-256:
+  **375a75276ea0e354c0d7411aafc420e7d331290ca58991100cbaa830731db594**
+
+The audit checks that consumer mutation occurs only after a genuine native
+upstream response, the trusted reference still uses native SCP->NRF, the blind
+detector imports neither the fault generator nor private labels, and the known
+relational blind spot remains explicitly documented.
