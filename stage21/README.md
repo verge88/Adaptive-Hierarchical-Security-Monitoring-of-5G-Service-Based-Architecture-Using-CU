@@ -537,3 +537,37 @@ The audit checks that consumer mutation occurs only after a genuine native
 upstream response, the trusted reference still uses native SCP->NRF, the blind
 detector imports neither the fault generator nor private labels, and the known
 relational blind spot remains explicitly documented.
+
+
+## Publication-facing experimental nomenclature
+
+The scientific article no longer uses internal repository labels Stage 15..21
+as the primary narrative.
+
+A publication-ready Russian structure is now defined in
+**article/EXPERIMENTAL_PROGRAM_RU.md**.
+
+Main-text terminology:
+
+- Experiment 1 — within-family validation of hierarchical sequential detection
+- Experiment 2 — validation under distribution shift
+- Experiment 3 — directional sequential discrepancy accumulation
+- Experiment 4 — blind transfer validation on native Open5GS SCP->NRF
+- Experiment 5 — stability-gated sparse-event memory
+- Experiment 6 — value-independent structural JSON reconciliation
+- Experiment 7 — semantic reconciliation of stable scalar values
+
+The later validation work is presented by scientific function rather than new
+Stage numbers:
+
+- large-scale independent replication
+- unified ablation
+- time-to-detection analysis
+- monitoring-overhead benchmark
+- formal trust and attacker model
+
+Internal Stage labels are retained only in the reproducibility mapping that
+links article terminology to repository branches and artifacts.
+
+An automated nomenclature guard checks that Stage 15..21 labels do not leak
+into the scientific narrative before the reproducibility section.
