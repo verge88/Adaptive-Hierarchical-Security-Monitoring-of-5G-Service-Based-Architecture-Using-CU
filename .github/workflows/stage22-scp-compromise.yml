@@ -11,6 +11,16 @@ on:
       - 'stage22/**'
       - 'stage22_tests/**'
       - '.github/workflows/stage22-scp-compromise.yml'
+  pull_request:
+    branches: ['stage21/semantic-integrity']
+    paths:
+      - 'research/stage22_scp_fault.py'
+      - 'research/stage22_capture.py'
+      - 'research/stage22_live_detect.py'
+      - 'research/stage22_report.py'
+      - 'stage22/**'
+      - 'stage22_tests/**'
+      - '.github/workflows/stage22-scp-compromise.yml'
   workflow_dispatch:
 
 permissions:
