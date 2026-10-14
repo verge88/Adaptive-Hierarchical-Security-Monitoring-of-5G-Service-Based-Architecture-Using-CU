@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .stage19_live_detect import detect as stage19_detect
 from .stage20_live_detect import detect as stage20_detect
 from .stage21_live_detect import FROZEN_STAGE21, detect as stage21_detect
 
@@ -24,6 +25,8 @@ def detect(external_rows: list[dict], common_rows: list[dict]) -> dict:
 
     external = stage21_detect(external_rows)
     common = stage21_detect(common_rows)
+    external19 = stage19_detect(external_rows)
+    common19 = stage19_detect(common_rows)
     external20 = stage20_detect(external_rows)
     common20 = stage20_detect(common_rows)
     if external["seed"] != common["seed"]:
@@ -60,6 +63,37 @@ def detect(external_rows: list[dict], common_rows: list[dict]) -> dict:
                 "all trusted projected fields replaced by the compromised "
                 "NRF consumer projection"
             ),
+        },
+        "external_channel_calibration": {
+            "sparse_quorum_enabled": external19["calibration"][
+                "stage19_quorum_enabled"
+            ],
+            "sparse_stable_fraction": external19["calibration"][
+                "stage19_stable_fraction"
+            ],
+            "structural_channel_enabled": external20["calibration"][
+                "structural_channel_enabled"
+            ],
+            "structural_exact_fraction": external20["calibration"][
+                "structural_exact_fraction"
+            ],
+            "semantic_channel_enabled": external["calibration"][
+                "semantic_channel_enabled"
+            ],
+            "semantic_selected_path_count": external["calibration"][
+                "semantic_selected_path_count"
+            ],
+        },
+        "common_channel_calibration": {
+            "sparse_quorum_enabled": common19["calibration"][
+                "stage19_quorum_enabled"
+            ],
+            "structural_channel_enabled": common20["calibration"][
+                "structural_channel_enabled"
+            ],
+            "semantic_channel_enabled": common["calibration"][
+                "semantic_channel_enabled"
+            ],
         },
         "external_reference": external,
         "common_path_control": common,
