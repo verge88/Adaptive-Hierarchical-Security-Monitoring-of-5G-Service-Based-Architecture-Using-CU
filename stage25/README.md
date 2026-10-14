@@ -27,7 +27,8 @@ Only facts justified by those observations are retained:
 
 - `nfInstanceId`;
 - `nfType=NSSF`;
-- `nfStatus=REGISTERED`.
+- `nfStatus=REGISTERED`;
+- `nfRegisteredAtSource=true`, derived from the NF-side registration UUID set.
 
 The consumer's compromised NRF Discovery response is mapped to exactly the same
 three-field NSSF projection. Fields outside this evidence boundary are discarded
