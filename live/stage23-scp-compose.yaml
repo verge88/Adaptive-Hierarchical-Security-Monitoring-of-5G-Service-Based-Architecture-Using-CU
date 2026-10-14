@@ -1,0 +1,10 @@
+services:
+  scp:
+    image: stage23-native-open5gs-scp:v2.7.6
+    build:
+      context: ..
+      dockerfile: live/stage23-scp.Dockerfile
+      args:
+        OPEN5GS_REF: v2.7.6
+    environment:
+      STAGE23_LAB_TAMPER: "1"

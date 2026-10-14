@@ -1,0 +1,208 @@
+name: Stage23 native SCP in-process integrity validation
+
+on:
+  push:
+    branches: ['stage23/native-scp-inprocess-compromise']
+    paths:
+      - 'live/stage23-sbi-path.c'
+      - 'live/stage23-scp.Dockerfile'
+      - 'live/stage23-scp-compose.yaml'
+      - 'research/stage23_capture.py'
+      - 'research/stage23_live_detect.py'
+      - 'research/stage23_report.py'
+      - 'stage23/**'
+      - 'stage23_tests/**'
+      - '.github/workflows/stage23-native-scp.yml'
+  pull_request:
+    branches: ['stage22/scp-compromise-boundary']
+    paths:
+      - 'live/stage23-sbi-path.c'
+      - 'live/stage23-scp.Dockerfile'
+      - 'live/stage23-scp-compose.yaml'
+      - 'research/stage23_capture.py'
+      - 'research/stage23_live_detect.py'
+      - 'research/stage23_report.py'
+      - 'stage23/**'
+      - 'stage23_tests/**'
+      - '.github/workflows/stage23-native-scp.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage23-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage23 tests
+        run: |
+          python -m compileall -q research stage23_tests
+          python -m unittest discover -s stage23_tests -v
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate Stage23 compose
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml config -q
+      - name: Build instrumented native Open5GS SCP v2.7.6
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml build scp
+      - name: Start isolated native Open5GS core
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml up -d --pull always
+      - name: Verify direct native NRF registrations
+        run: python -m research.nrf_probe --retries 45
+      - name: Capture Stage23 native-SCP block
+        run: |
+          python -m research.stage23_capture \
+            --seed $((9001 + ${{ matrix.shard }})) \
+            --telemetry-output stage23_telemetry \
+            --labels-output stage23_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml images > diagnostics/images.txt || true
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free Stage23 telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage23-telemetry-${{ matrix.shard }}
+          path: |
+            stage23_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE Stage23 labels and SCP audit separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage23-labels-${{ matrix.shard }}
+          path: stage23_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage23-scp-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: capture
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY Stage23 telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage23-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove private labels and native SCP audit are absent
+        run: |
+          if find detector_input \( -name 'private_labels.json' -o -name 'native_scp_private.log' \) | grep -q .; then
+            echo "Private Stage23 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Locate label-free telemetry
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          COMMON="$(find detector_input -name common_path_telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          test -n "$COMMON"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+          echo "common=$COMMON" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Stage21 detector
+        run: |
+          python -m research.stage23_live_detect \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
+            --common-path-telemetry "${{ steps.telemetry.outputs.common }}" \
+            --output stage23_detector
+      - name: Upload blind Stage23 alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage23-alarms-${{ matrix.shard }}
+          path: stage23_detector/
+          retention-days: 30
+
+  audit:
+    needs: [capture, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download Stage23 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage23-*
+          path: stage23_batches
+      - name: Join labels and native-SCP provenance post-hoc
+        run: |
+          python -m research.stage23_report \
+            --input stage23_batches \
+            --output stage23_report
+      - name: Publish Stage23 report
+        run: cat stage23_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage23 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage23-native-scp-inprocess-report
+          path: stage23_report/
+          retention-days: 90
