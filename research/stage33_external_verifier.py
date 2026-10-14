@@ -333,6 +333,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
             return
         try:
+            expected_token = os.environ.get("STAGE33_API_TOKEN", "")
+            if expected_token:
+                supplied = self.headers.get("Authorization", "")
+                if supplied != "Bearer " + expected_token:
+                    self._send(401, {"error": "unauthorized"})
+                    return
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > 8_000_000:
                 raise ValueError("Invalid Stage33 request size")
