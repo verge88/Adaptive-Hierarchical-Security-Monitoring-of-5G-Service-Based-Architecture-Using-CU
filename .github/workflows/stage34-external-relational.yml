@@ -52,7 +52,7 @@ jobs:
     env:
       STAGE34_COLLECTOR_ENDPOINT: https://stage34-external-open5gs-collector.onrender.com
       STAGE34_VERIFIER_ENDPOINT: https://stage34-external-relational-verifier.onrender.com
-      STAGE34_POLICY_SHA256: 4e013ff7cf8f9a9fa87716e5db7b9c8efd125b89498573c85796621154579be6
+      STAGE34_POLICY_SHA256: 5e83a3395ddf9db3f3fab5ad7cdbda47fef2d4148ffc06f7f97ba1f7662d388b
       STAGE34_COLLECTOR_KEY_SHA256: 6a4bb2dbfaf7276808295d3909176a2d6533111f4f01c9e4b7bcaeb8e27e7199
       STAGE34_VERIFIER_KEY_SHA256: aaf1fa7616968fb1ccf9c45d8b6ecb6df8b4d3fb9683d93d0a3141c67a8d22ee
     steps:
