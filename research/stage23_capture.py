@@ -31,7 +31,7 @@ EPISODES = 6
 TOTAL_TICKS = WARMUP_TICKS + EPISODE_TICKS * EPISODES
 MUTATION_LOCAL_TICKS = (0, 4, 8)
 EXPECTED_MUTATION_TICKS = tuple(
-    WARMUP_TICKS + episode * EPISODE_TICKS + local
+    WARMUP_TICKS + episode * CYCLE_TICKS + local
     for episode in range(EPISODES)
     for local in MUTATION_LOCAL_TICKS
 )
@@ -128,7 +128,7 @@ def labels_from_native_scp_log(seed: int, log_text: str) -> dict:
 
     episodes = []
     for episode in range(EPISODES):
-        start = WARMUP_TICKS + episode * EPISODE_TICKS
+        start = WARMUP_TICKS + episode * CYCLE_TICKS
         end = start + EPISODE_TICKS
         episodes.append(
             {
