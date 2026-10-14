@@ -236,7 +236,7 @@ async def capture(seed: int):
         await command_output(
             [
                 "docker", "exec", container_id, "sha256sum",
-                "/opt/open5gs/bin/open5gs-scpd",
+                "/src/open5gs/build/src/scp/open5gs-scpd",
             ]
         )
     ).strip()
@@ -245,7 +245,7 @@ async def capture(seed: int):
         [
             "docker", "exec", container_id, "sh", "-c",
             "grep -a -q STAGE23_NATIVE_SCP_LAB_MUTATION "
-            "/opt/open5gs/bin/open5gs-scpd",
+            "/src/open5gs/build/src/scp/open5gs-scpd",
         ]
     )
     source_sha256 = hashlib.sha256(
