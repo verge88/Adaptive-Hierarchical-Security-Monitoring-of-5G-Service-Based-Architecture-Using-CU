@@ -261,7 +261,7 @@ async def h2_exchange(base: str, path: str, *, target: str | None = None, timeou
                 (":authority", url.netloc),
                 (":path", path),
                 ("accept", "application/json"),
-                ("user-agent", "Stage34-External-Collector"),
+                ("user-agent", "AMF-Stage34-External-Collector"),
             ]
             if target is not None:
                 headers.append(("3gpp-sbi-target-apiroot", target))
