@@ -1,0 +1,225 @@
+name: Stage29 held-out attested invariant validation
+
+on:
+  push:
+    branches: ['stage29/attested-invariant-heldout']
+    paths:
+      - 'research/stage29_capture.py'
+      - 'research/stage29_attestation.py'
+      - 'research/stage29_live_detect.py'
+      - 'research/stage29_report.py'
+      - 'stage29/**'
+      - 'stage29_tests/**'
+      - '.github/workflows/stage29-heldout-invariant.yml'
+      - 'live/stage28-nnrf-handler.c'
+      - 'live/stage28-nrf.Dockerfile'
+      - 'live/stage28-nrf-compose.yaml'
+  pull_request:
+    branches: ['stage28/randomized-common-source-stress']
+    paths:
+      - 'research/stage29_capture.py'
+      - 'research/stage29_attestation.py'
+      - 'research/stage29_live_detect.py'
+      - 'research/stage29_report.py'
+      - 'stage29/**'
+      - 'stage29_tests/**'
+      - '.github/workflows/stage29-heldout-invariant.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage29-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage29 tests
+        run: |
+          python -m compileall -q research stage29_tests
+          python -m unittest discover -s stage29_tests -v
+
+  authority:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build frozen Stage27 authority manifest
+        run: python -m research.stage27_authority --output stage29_authority
+      - name: Generate ephemeral Ed25519 key and sign
+        run: |
+          PRIVATE_KEY="$RUNNER_TEMP/stage29-authority-private.pem"
+          openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
+          openssl pkey -in "$PRIVATE_KEY" -pubout -out stage29_authority/public.pem
+          openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in stage29_authority/manifest.json -out stage29_authority/manifest.sig
+          openssl pkeyutl -verify -rawin -pubin -inkey stage29_authority/public.pem -in stage29_authority/manifest.json -sigfile stage29_authority/manifest.sig
+          rm -f "$PRIVATE_KEY"
+          test ! -e "$PRIVATE_KEY"
+      - name: Prove private key is absent
+        run: test -z "$(find stage29_authority -type f -iname '*private*' -print -quit)"
+      - name: Upload signed authority material
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-authority
+          path: stage29_authority/
+          retention-days: 30
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml config -q
+      - name: Build frozen Stage28 randomized native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture fresh held-out randomized block
+        run: python -m research.stage29_capture --seed $((9601 + ${{ matrix.shard }})) --telemetry-output stage29_raw --labels-output stage29_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free raw telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-raw-${{ matrix.shard }}
+          path: |
+            stage29_raw/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE realized schedule and labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-labels-${{ matrix.shard }}
+          path: stage29_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  attestation-project:
+    needs: [authority, capture]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download signed authority material
+        uses: actions/download-artifact@v4
+        with:
+          name: stage29-authority
+          path: authority_input
+      - name: Download ONLY label-free raw telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage29-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove private schedule and signing key are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+          test -z "$(find . -iname '*private*.pem' -print -quit)"
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Verify frozen authority and add verified-reference marker
+        run: python -m research.stage29_attestation --raw-telemetry "${{ steps.raw.outputs.path }}" --manifest authority_input/manifest.json --signature authority_input/manifest.sig --public-key authority_input/public.pem --output stage29_projected
+      - name: Upload verified projected telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-projected-${{ matrix.shard }}
+          path: stage29_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY verified projected telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage29-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove labels and private schedules are absent
+        run: |
+          test -z "$(find detector_input -name private_labels.json -print -quit)"
+          test -z "$(find detector_input -name native_nrf_private.log -print -quit)"
+          test -z "$(find detector_input -iname '*private*.pem' -print -quit)"
+      - name: Run frozen legacy detector plus preregistered invariant channel
+        run: python -m research.stage29_live_detect --attested-telemetry detector_input/attested_telemetry.json --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json --output stage29_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-alarms-${{ matrix.shard }}
+          path: stage29_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage29 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage29-*
+          path: stage29_batches
+      - name: Join held-out private schedules post-hoc
+        run: python -m research.stage29_report --input stage29_batches --output stage29_report
+      - name: Publish Stage29 report
+        run: cat stage29_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage29 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage29-heldout-invariant-report
+          path: stage29_report/
+          retention-days: 90
