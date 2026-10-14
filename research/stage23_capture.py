@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -47,19 +48,23 @@ COMPOSE = [
 ]
 
 
-async def compose_output(args: list[str]) -> str:
+async def command_output(args: list[str], timeout: int = 30) -> str:
     proc = await asyncio.create_subprocess_exec(
-        *(COMPOSE + args),
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     if proc.returncode:
         raise RuntimeError(
-            f"docker compose {' '.join(args)} failed: "
+            f"{' '.join(args)} failed: "
             + err.decode(errors="replace")[-1000:]
         )
     return out.decode(errors="replace")
+
+
+async def compose_output(args: list[str]) -> str:
+    return await command_output(COMPOSE + args)
 
 
 async def await_scp_port() -> None:
@@ -224,10 +229,36 @@ async def capture(seed: int):
     log_text = await compose_output(["logs", "--no-color", "scp"])
     labels = labels_from_native_scp_log(seed, log_text)
 
+    container_id = (await compose_output(["ps", "-q", "scp"])).strip()
+    if not container_id:
+        raise AssertionError("Stage23 native SCP container is not running")
+    binary_line = (
+        await command_output(
+            [
+                "docker", "exec", container_id, "sha256sum",
+                "/opt/open5gs/bin/open5gs-scpd",
+            ]
+        )
+    ).strip()
+    binary_sha256 = binary_line.split()[0]
+    await command_output(
+        [
+            "docker", "exec", container_id, "sh", "-c",
+            "grep -a -q STAGE23_NATIVE_SCP_LAB_MUTATION "
+            "/opt/open5gs/bin/open5gs-scpd",
+        ]
+    )
+    source_sha256 = hashlib.sha256(
+        Path("live/stage23-sbi-path.c").read_bytes()
+    ).hexdigest()
+
     provenance = {
         "stage": 23,
         "seed": seed,
         "open5gs_source_ref": "v2.7.6",
+        "native_scp_binary_sha256": binary_sha256,
+        "instrumented_scp_source_sha256": source_sha256,
+        "native_scp_binary_contains_stage23_marker": True,
         "consumer_endpoint": NATIVE_SCP,
         "trusted_endpoint": NATIVE_NRF,
         "consumer_request_sent_directly_to_open5gs_scpd": True,
