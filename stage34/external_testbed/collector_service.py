@@ -362,11 +362,11 @@ async def restart_testbed() -> dict:
     for p in LOG_ROOT.glob("stage34-*.log"):
         p.unlink(missing_ok=True)
 
-    start_process("nrf", "/opt/open5gs/build/src/nrf/open5gs-nrfd", "nrf.yaml")
+    start_process("nrf", "/src/open5gs/build/src/nrf/open5gs-nrfd", "nrf.yaml")
     await asyncio.sleep(0.4)
-    start_process("scp", "/opt/open5gs/build/src/scp/open5gs-scpd", "scp.yaml")
-    start_process("nssf1", "/opt/open5gs/build/src/nssf/open5gs-nssfd", "nssf1.yaml")
-    start_process("nssf2", "/opt/open5gs/build/src/nssf/open5gs-nssfd", "nssf2.yaml")
+    start_process("scp", "/src/open5gs/build/src/scp/open5gs-scpd", "scp.yaml")
+    start_process("nssf1", "/src/open5gs/build/src/nssf/open5gs-nssfd", "nssf1.yaml")
+    start_process("nssf2", "/src/open5gs/build/src/nssf/open5gs-nssfd", "nssf2.yaml")
     return await wait_ready()
 
 
