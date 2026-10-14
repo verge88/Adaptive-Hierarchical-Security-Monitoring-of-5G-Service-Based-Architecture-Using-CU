@@ -1,0 +1,202 @@
+name: Stage27 software-attested common-source validation
+
+on:
+  push:
+    branches: ['stage27/software-attested-common-source']
+    paths:
+      - 'research/stage27_attestation_authority.py'
+      - 'research/stage27_capture.py'
+      - 'research/stage27_live_detect.py'
+      - 'research/stage27_report.py'
+      - 'stage27/**'
+      - 'stage27_tests/**'
+      - '.github/workflows/stage27-software-attestation.yml'
+      - 'live/stage26-nnrf-handler.c'
+      - 'live/stage26-nrf.Dockerfile'
+      - 'live/stage26-nrf-compose.yaml'
+  pull_request:
+    branches: ['stage26/nrf-directional-persistent-phantom']
+    paths:
+      - 'research/stage27_attestation_authority.py'
+      - 'research/stage27_capture.py'
+      - 'research/stage27_live_detect.py'
+      - 'research/stage27_report.py'
+      - 'stage27/**'
+      - 'stage27_tests/**'
+      - '.github/workflows/stage27-software-attestation.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage27-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage27 tests
+        run: |
+          openssl version
+          python -m compileall -q research stage27_tests
+          python -m unittest discover -s stage27_tests -v
+
+  attestation-authority:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create isolated Ed25519 deployment-state attestation
+        run: |
+          python -m research.stage27_attestation_authority             --repo-root .             --output stage27_attestation_public
+      - name: Prove private key is absent from public bundle
+        run: |
+          test ! -e stage27_attestation_public/private.pem
+          test ! -e stage27_attestation_public/private.key
+          grep -q '"private_key_exported": false'             stage27_attestation_public/provenance.json
+      - name: Upload PUBLIC signed attestation only
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage27-attestation-public
+          path: stage27_attestation_public/
+          retention-days: 30
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Prove attestation bundle is absent from capture job
+        run: |
+          test ! -e stage27_attestation_public
+          test ! -e private.pem
+      - name: Validate Stage27 compose
+        run: |
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml config -q
+      - name: Build instrumented native Open5GS NRF v2.7.6
+        run: |
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core with stock SCP
+        run: |
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml up -d --pull always
+      - name: Capture coordinated NRF plus witness false state
+        run: |
+          python -m research.stage27_capture             --seed $((9401 + ${{ matrix.shard }}))             --telemetry-output stage27_telemetry             --labels-output stage27_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free Stage27 telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage27-telemetry-${{ matrix.shard }}
+          path: |
+            stage27_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE Stage27 labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage27-labels-${{ matrix.shard }}
+          path: stage27_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: |
+          docker compose             -f live/compose.yaml             -f live/stage5-compose.yaml             -f live/stage14-scp-compose.yaml             -f live/stage26-nrf-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: [attestation-authority, capture]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY label-free telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage27-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Download PUBLIC signed attestation
+        uses: actions/download-artifact@v4
+        with:
+          name: stage27-attestation-public
+          path: attestation_input
+      - name: Prove labels and private signing key are absent
+        run: |
+          if find detector_input attestation_input             \( -name 'private_labels.json' -o -name 'native_nrf_private.log'                -o -name 'private.pem' -o -name 'private.key' \) | grep -q .; then
+            echo "Private Stage27 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Locate telemetry
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+      - name: Verify attestation and run frozen detector
+        run: |
+          python -m research.stage27_live_detect             --telemetry "${{ steps.telemetry.outputs.path }}"             --attestation-bundle attestation_input             --output stage27_detector
+      - name: Upload blind Stage27 alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage27-alarms-${{ matrix.shard }}
+          path: stage27_detector/
+          retention-days: 30
+
+  audit:
+    needs: [attestation-authority, capture, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage27 artifacts only after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage27-*
+          path: stage27_batches
+      - name: Join private labels post-hoc
+        run: |
+          python -m research.stage27_report             --input stage27_batches             --output stage27_report
+      - name: Publish Stage27 report
+        run: cat stage27_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage27 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage27-software-attested-common-source-report
+          path: stage27_report/
+          retention-days: 90
