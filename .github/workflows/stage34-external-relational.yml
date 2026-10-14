@@ -43,3 +43,89 @@ jobs:
           name: stage34-policy
           path: stage34_policy/
           retention-days: 90
+
+
+  heldout-live:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      STAGE34_COLLECTOR_ENDPOINT: https://stage34-external-open5gs-collector.onrender.com
+      STAGE34_VERIFIER_ENDPOINT: https://stage34-external-relational-verifier.onrender.com
+      STAGE34_POLICY_SHA256: 4e013ff7cf8f9a9fa87716e5db7b9c8efd125b89498573c85796621154579be6
+      STAGE34_COLLECTOR_KEY_SHA256: 6a4bb2dbfaf7276808295d3909176a2d6533111f4f01c9e4b7bcaeb8e27e7199
+      STAGE34_VERIFIER_KEY_SHA256: aaf1fa7616968fb1ccf9c45d8b6ecb6df8b4d3fb9683d93d0a3141c67a8d22ee
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signature dependencies
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage34-policy
+          path: stage34_policy
+      - name: Enforce preregistered policy
+        run: |
+          ACTUAL="$(tr -d '\n' < stage34_policy/policy.sha256)"
+          test "$ACTUAL" = "$STAGE34_POLICY_SHA256"
+      - name: Run 32 fresh external Open5GS experiments
+        run: |
+          set -euo pipefail
+          mkdir -p stage34_evidence stage34_labels
+          for seed in $(seq 12001 12032); do
+            echo "=== Stage34 seed $seed ==="
+            ok=0
+            for attempt in 1 2 3; do
+              rm -rf "stage34_evidence/$seed" "stage34_labels/$seed"
+              if python -m research.stage34_external_client                 --seed "$seed"                 --collector-endpoint "$STAGE34_COLLECTOR_ENDPOINT"                 --verifier-endpoint "$STAGE34_VERIFIER_ENDPOINT"                 --policy-sha256-file stage34_policy/policy.sha256                 --expected-collector-key-sha256 "$STAGE34_COLLECTOR_KEY_SHA256"                 --expected-verifier-key-sha256 "$STAGE34_VERIFIER_KEY_SHA256"                 --output "stage34_evidence/$seed"                 --labels-output "stage34_labels/$seed"; then
+                ok=1
+                break
+              fi
+              echo "seed=$seed attempt=$attempt failed; retrying" >&2
+              sleep 4
+            done
+            test "$ok" = 1
+          done
+      - name: Prove 32 complete evidence and label sets
+        run: |
+          test "$(find stage34_evidence -name external_evidence.json | wc -l)" -eq 32
+          test "$(find stage34_evidence -name relational_verdict.json | wc -l)" -eq 32
+          test "$(find stage34_labels -name private_labels.json | wc -l)" -eq 32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage34-external-evidence
+          path: stage34_evidence/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage34-private-labels
+          path: stage34_labels/
+          retention-days: 90
+
+  audit:
+    needs: heldout-live
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage34-external-evidence
+          path: stage34_batches/evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage34-private-labels
+          path: stage34_batches/labels
+      - name: Join private labels only after signed external verdicts
+        run: python -m research.stage34_report --input stage34_batches --output stage34_report
+      - name: Publish Stage34 report
+        run: cat stage34_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage34-external-relational-report
+          path: stage34_report/
+          retention-days: 90
