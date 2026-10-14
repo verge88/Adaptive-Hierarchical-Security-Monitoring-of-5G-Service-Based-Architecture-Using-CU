@@ -1,0 +1,145 @@
+name: Stage33 final independent external verifier
+
+on:
+  push:
+    branches: ['stage33/final-external-verifier']
+  pull_request:
+    branches: ['stage32/external-kms-root']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt cryptography
+      - run: |
+          python -m compileall -q research stage33 stage33_tests
+          python -m unittest discover -s stage33_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m research.stage33_policy --output stage33_policy
+      - name: Publish approved policy digest
+        run: |
+          cat stage33_policy/policy.sha256
+          echo "### Stage33 policy SHA-256" >> "$GITHUB_STEP_SUMMARY"
+          cat stage33_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-policy
+          path: stage33_policy/
+          retention-days: 90
+
+
+  capture:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Build frozen Stage28 native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture fresh Stage33 held-out block
+        run: python -m research.stage33_capture --seed $((10001 + ${{ matrix.shard }})) --telemetry-output stage33_raw --labels-output stage33_private_labels
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-raw-${{ matrix.shard }}
+          path: stage33_raw/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-labels-${{ matrix.shard }}
+          path: stage33_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  external-decision:
+    needs: [policy-build, capture]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      STAGE33_ENDPOINT: https://stage33-5g-independent-verifier.onrender.com
+      STAGE33_PUBLIC_KEY_SHA256: 242211c7b9da4053c97655f216264ef83f7fc54eb4d638d64776732ddec7ce7f
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-policy
+          path: stage33_policy
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove private labels are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Obtain and verify signed external decision
+        run: |
+          python -m research.stage33_external_client             --endpoint "$STAGE33_ENDPOINT"             --expected-public-key-sha256 "$STAGE33_PUBLIC_KEY_SHA256"             --policy-sha256-file stage33_policy/policy.sha256             --raw-telemetry "${{ steps.raw.outputs.path }}"             --output stage33_external
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-verdict-${{ matrix.shard }}
+          path: stage33_external/
+          retention-days: 90
+
+  audit:
+    needs: [capture, external-decision]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage33-*
+          path: stage33_batches
+      - name: Join labels only after external decisions finish
+        run: python -m research.stage33_report --input stage33_batches --output stage33_report
+      - name: Publish final Stage33 report
+        run: cat stage33_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-final-independent-report
+          path: stage33_report/
+          retention-days: 90
