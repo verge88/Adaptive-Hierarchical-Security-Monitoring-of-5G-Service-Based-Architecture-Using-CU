@@ -13,9 +13,9 @@ decision rule, legitimate-transition schedule, or approved policy.
 - private randomized schedules: one fresh plan per runner;
 - labels remain separate until every external signed verdict has completed.
 
-The capture matrix and external-decision matrix each use 256 jobs. This stays
-below the GitHub Actions matrix expansion ceiling while matching the largest
-earlier Open5GS runner block used in this research line.
+The capture matrix and external-decision matrix each use 256 jobs, which is the
+GitHub Actions matrix expansion ceiling for a single matrix job. This doubles
+the earlier 128-runner Open5GS block used in this research line.
 
 ## Frozen elements
 
