@@ -1,0 +1,293 @@
+name: Stage31 GitHub-anchored authority bundle validation
+
+on:
+  push:
+    branches: ['stage31/github-anchored-authority-bundle']
+    paths:
+      - 'research/stage31_capture.py'
+      - 'research/stage31_attestation.py'
+      - 'research/stage31_live_detect.py'
+      - 'research/stage31_report.py'
+      - 'stage31/**'
+      - 'stage31_tests/**'
+      - '.github/workflows/stage31-github-anchored-authority.yml'
+      - 'research/stage30_authority.py'
+      - 'research/stage30_capture.py'
+      - 'research/stage30_attestation.py'
+  pull_request:
+    branches: ['stage30/signed-baseline-freshness']
+    paths:
+      - 'research/stage31_capture.py'
+      - 'research/stage31_attestation.py'
+      - 'research/stage31_live_detect.py'
+      - 'research/stage31_report.py'
+      - 'stage31/**'
+      - 'stage31_tests/**'
+      - '.github/workflows/stage31-github-anchored-authority.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage31-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage31 tests
+        run: |
+          python -m compileall -q research stage31_tests
+          python -m unittest discover -s stage31_tests -v
+
+  authority:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build frozen Stage30 signed epoch-chain inputs
+        run: python -m research.stage30_authority --output stage31_authority
+      - name: Sign epochs with ephemeral Ed25519 key
+        run: |
+          PRIVATE_KEY="$RUNNER_TEMP/stage31-authority-private.pem"
+          openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
+          openssl pkey -in "$PRIVATE_KEY" -pubout -out stage31_authority/public.pem
+          for manifest in stage31_authority/baseline-*.json; do
+            signature="${manifest%.json}.sig"
+            openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$manifest" -out "$signature"
+            openssl pkeyutl -verify -rawin -pubin -inkey stage31_authority/public.pem -in "$manifest" -sigfile "$signature"
+          done
+          rm -f "$PRIVATE_KEY"
+          test ! -e "$PRIVATE_KEY"
+          test -z "$(find stage31_authority -type f -iname '*private*' -print -quit)"
+      - name: Package complete authority bundle
+        run: |
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner             -czf stage31_authority_bundle.tar.gz -C stage31_authority .
+          sha256sum stage31_authority_bundle.tar.gz
+      - name: Generate GitHub Artifact Attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: stage31_authority_bundle.tar.gz
+      - name: Upload only attested authority bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-authority-bundle
+          path: stage31_authority_bundle.tar.gz
+          retention-days: 30
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml config -q
+      - name: Build frozen Stage28 randomized native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture frozen Stage30 transitions plus fresh attacks
+        run: python -m research.stage31_capture --seed $((9801 + ${{ matrix.shard }})) --telemetry-output stage31_raw --labels-output stage31_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free raw telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-raw-${{ matrix.shard }}
+          path: |
+            stage31_raw/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE attack labels separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-labels-${{ matrix.shard }}
+          path: stage31_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  attestation-project:
+    needs: [authority, capture]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STAGE31_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/stage31-github-anchored-authority.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download attested authority bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: stage31-authority-bundle
+          path: authority_delivery
+      - name: Download ONLY label-free raw telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage31-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove labels and private key are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+          test -z "$(find . -iname '*private*.pem' -print -quit)"
+      - name: Verify GitHub Artifact Attestation before extraction
+        run: |
+          gh attestation verify authority_delivery/stage31_authority_bundle.tar.gz             -R "$GITHUB_REPOSITORY"             --signer-workflow "$STAGE31_SIGNER_WORKFLOW"             --source-digest "$GITHUB_SHA"             --format json > github_attestation_verification.json
+          test -s github_attestation_verification.json
+      - name: Prove modified authority bundle is rejected
+        run: |
+          cp authority_delivery/stage31_authority_bundle.tar.gz tampered_authority_bundle.tar.gz
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("tampered_authority_bundle.tar.gz")
+          data = bytearray(p.read_bytes())
+          if not data:
+              raise SystemExit("empty bundle")
+          data[len(data) // 2] ^= 1
+          p.write_bytes(data)
+          PY
+          if gh attestation verify tampered_authority_bundle.tar.gz             -R "$GITHUB_REPOSITORY"             --signer-workflow "$STAGE31_SIGNER_WORKFLOW"             --source-digest "$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "Tampered Stage31 authority bundle unexpectedly verified"
+            exit 1
+          fi
+      - name: Record verified external identity binding
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          bundle = Path("authority_delivery/stage31_authority_bundle.tar.gz")
+          marker = {
+              "github_artifact_attestation_verified": True,
+              "tampered_bundle_rejected": True,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_digest": os.environ["GITHUB_SHA"],
+              "signer_workflow": os.environ["STAGE31_SIGNER_WORKFLOW"],
+              "authority_bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+          }
+          Path("github_attestation_marker.json").write_text(
+              json.dumps(marker, indent=2), encoding="utf8"
+          )
+          PY
+      - name: Extract authority bundle only after provenance verification
+        run: |
+          mkdir authority_input
+          tar -xzf authority_delivery/stage31_authority_bundle.tar.gz -C authority_input
+          test -f authority_input/public.pem
+          test -f authority_input/baseline-0.json
+          test -f authority_input/baseline-3.sig
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Verify epoch chain and build detector projections
+        run: |
+          python -m research.stage31_attestation             --raw-telemetry "${{ steps.raw.outputs.path }}"             --authority-dir authority_input             --github-verification-marker github_attestation_marker.json             --github-verification-json github_attestation_verification.json             --output stage31_projected
+      - name: Upload verified projected telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-projected-${{ matrix.shard }}
+          path: stage31_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY verified projected telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage31-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove labels and private key are absent
+        run: |
+          test -z "$(find detector_input -name private_labels.json -print -quit)"
+          test -z "$(find detector_input -name native_nrf_private.log -print -quit)"
+          test -z "$(find detector_input -iname '*private*.pem' -print -quit)"
+      - name: Run frozen Stage29 detector with Stage30 freshness
+        run: python -m research.stage31_live_detect --attested-telemetry detector_input/attested_telemetry.json --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json --output stage31_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-alarms-${{ matrix.shard }}
+          path: stage31_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage31 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage31-*
+          path: stage31_batches
+      - name: Join labels only after blind detection
+        run: python -m research.stage31_report --input stage31_batches --output stage31_report
+      - name: Publish Stage31 report
+        run: cat stage31_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage31 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage31-github-anchored-authority-report
+          path: stage31_report/
+          retention-days: 90
