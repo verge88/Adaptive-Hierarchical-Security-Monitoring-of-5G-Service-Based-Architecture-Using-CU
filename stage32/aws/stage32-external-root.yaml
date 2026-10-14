@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stage32 external KMS/HSM-backed signing root for 5G SBA research
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: verge88
+  GitHubRepo:
+    Type: String
+    Default: Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+  GitHubEnvironment:
+    Type: String
+    Default: stage32-external
+  GitHubOidcProviderArn:
+    Type: String
+    Description: Existing IAM OIDC provider ARN for token.actions.githubusercontent.com
+
+Resources:
+  Stage32SigningKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Stage32 external non-exportable asymmetric signing key
+      KeySpec: ECC_NIST_P256
+      KeyUsage: SIGN_VERIFY
+      Enabled: true
+      EnableKeyRotation: false
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+
+  Stage32SigningKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/stage32-external-root
+      TargetKeyId:
+        Ref: Stage32SigningKey
+
+  Stage32ApprovedDigest:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /stage32/${GitHubOrg}/${GitHubRepo}/approved-policy-sha256
+      Type: String
+      Value: UNSET
+      Description: >
+        Administrator-managed Stage32 approved policy digest.
+        GitHub Actions is intentionally not permitted to update this value.
+
+  Stage32SignerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - Fn::Sub: arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: Stage32SignerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/stage32/${GitHubOrg}/${GitHubRepo}/approved-policy-sha256
+              - Effect: Allow
+                Action:
+                  - kms:Sign
+                Resource:
+                  Fn::GetAtt:
+                    - Stage32SigningKey
+                    - Arn
+
+  Stage32SignerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 15
+      Role:
+        Fn::GetAtt:
+          - Stage32SignerRole
+          - Arn
+      Environment:
+        Variables:
+          KMS_KEY_ARN:
+            Fn::GetAtt:
+              - Stage32SigningKey
+              - Arn
+          APPROVED_DIGEST_PARAMETER:
+            Ref: Stage32ApprovedDigest
+      Code:
+        ZipFile: |
+          import base64
+          import boto3
+          import os
+          import re
+
+          kms = boto3.client("kms")
+          ssm = boto3.client("ssm")
+
+          def handler(event, context):
+              digest = str(event.get("digest_sha256", "")).lower()
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise ValueError("digest_sha256 must be 64 lowercase hex characters")
+
+              parameter_name = os.environ["APPROVED_DIGEST_PARAMETER"]
+              approved = ssm.get_parameter(Name=parameter_name)["Parameter"]["Value"].strip().lower()
+              if digest != approved:
+                  raise PermissionError("digest is not externally approved")
+
+              key_arn = os.environ["KMS_KEY_ARN"]
+              response = kms.sign(
+                  KeyId=key_arn,
+                  Message=bytes.fromhex(digest),
+                  MessageType="DIGEST",
+                  SigningAlgorithm="ECDSA_SHA_256",
+              )
+              return {
+                  "stage": 32,
+                  "digest_sha256": digest,
+                  "approved_digest": approved,
+                  "approval_source": "external_ssm_allowlist",
+                  "kms_key_arn": response["KeyId"],
+                  "signing_algorithm": response["SigningAlgorithm"],
+                  "signature_base64": base64.b64encode(response["Signature"]).decode("ascii"),
+                  "signer_function_arn": context.invoked_function_arn,
+              }
+
+  Stage32GitHubRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                Ref: GitHubOidcProviderArn
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub:
+                  Fn::Sub: repo:${GitHubOrg}/${GitHubRepo}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: Stage32InvokeOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  Fn::GetAtt:
+                    - Stage32SignerFunction
+                    - Arn
+              - Effect: Allow
+                Action:
+                  - kms:GetPublicKey
+                Resource:
+                  Fn::GetAtt:
+                    - Stage32SigningKey
+                    - Arn
+
+Outputs:
+  GitHubRoleArn:
+    Value:
+      Fn::GetAtt:
+        - Stage32GitHubRole
+        - Arn
+  SignerFunctionName:
+    Value:
+      Ref: Stage32SignerFunction
+  SignerFunctionArn:
+    Value:
+      Fn::GetAtt:
+        - Stage32SignerFunction
+        - Arn
+  KmsKeyArn:
+    Value:
+      Fn::GetAtt:
+        - Stage32SigningKey
+        - Arn
+  ApprovedDigestParameterName:
+    Value:
+      Ref: Stage32ApprovedDigest
