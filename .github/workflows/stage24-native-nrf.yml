@@ -1,0 +1,206 @@
+name: Stage24 native NRF compromise with external NF witness
+
+on:
+  push:
+    branches: ['stage24/native-nrf-compromise-witness']
+    paths:
+      - 'live/stage24-nnrf-handler.c'
+      - 'live/stage24-nrf.Dockerfile'
+      - 'live/stage24-nrf-compose.yaml'
+      - 'research/stage24_capture.py'
+      - 'research/stage24_live_detect.py'
+      - 'research/stage24_report.py'
+      - 'stage24/**'
+      - 'stage24_tests/**'
+      - '.github/workflows/stage24-native-nrf.yml'
+  pull_request:
+    branches: ['stage23/native-scp-inprocess-compromise']
+    paths:
+      - 'live/stage24-nnrf-handler.c'
+      - 'live/stage24-nrf.Dockerfile'
+      - 'live/stage24-nrf-compose.yaml'
+      - 'research/stage24_capture.py'
+      - 'research/stage24_live_detect.py'
+      - 'research/stage24_report.py'
+      - 'stage24/**'
+      - 'stage24_tests/**'
+      - '.github/workflows/stage24-native-nrf.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage24-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage24 tests
+        run: |
+          python -m compileall -q research stage24_tests
+          python -m unittest discover -s stage24_tests -v
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate Stage24 compose
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml config -q
+      - name: Build instrumented native Open5GS NRF v2.7.6
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core with stock SCP
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml up -d --pull always
+      - name: Capture Stage24 native-NRF block
+        run: |
+          python -m research.stage24_capture \
+            --seed $((9101 + ${{ matrix.shard }})) \
+            --telemetry-output stage24_telemetry \
+            --labels-output stage24_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml images > diagnostics/images.txt || true
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free Stage24 telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage24-telemetry-${{ matrix.shard }}
+          path: |
+            stage24_telemetry/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE Stage24 labels and NRF audit separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage24-labels-${{ matrix.shard }}
+          path: stage24_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: |
+          docker compose \
+            -f live/compose.yaml \
+            -f live/stage5-compose.yaml \
+            -f live/stage14-scp-compose.yaml \
+            -f live/stage24-nrf-compose.yaml down --remove-orphans || true
+
+  blind-detect:
+    needs: capture
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download ONLY Stage24 telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage24-telemetry-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove private labels and native NRF audit are absent
+        run: |
+          if find detector_input \( -name 'private_labels.json' -o -name 'native_nrf_private.log' \) | grep -q .; then
+            echo "Private Stage24 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Locate label-free telemetry
+        id: telemetry
+        run: |
+          TELEMETRY="$(find detector_input -name telemetry.json -print -quit)"
+          COMMON="$(find detector_input -name common_path_telemetry.json -print -quit)"
+          test -n "$TELEMETRY"
+          test -n "$COMMON"
+          echo "path=$TELEMETRY" >> "$GITHUB_OUTPUT"
+          echo "common=$COMMON" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Stage21 detector
+        run: |
+          python -m research.stage24_live_detect \
+            --telemetry "${{ steps.telemetry.outputs.path }}" \
+            --common-path-telemetry "${{ steps.telemetry.outputs.common }}" \
+            --output stage24_detector
+      - name: Upload blind Stage24 alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage24-alarms-${{ matrix.shard }}
+          path: stage24_detector/
+          retention-days: 30
+
+  audit:
+    needs: [capture, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download Stage24 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage24-*
+          path: stage24_batches
+      - name: Join labels and native-NRF provenance post-hoc
+        run: |
+          python -m research.stage24_report \
+            --input stage24_batches \
+            --output stage24_report
+      - name: Publish Stage24 report
+        run: cat stage24_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage24 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage24-native-nrf-witness-report
+          path: stage24_report/
+          retention-days: 90
