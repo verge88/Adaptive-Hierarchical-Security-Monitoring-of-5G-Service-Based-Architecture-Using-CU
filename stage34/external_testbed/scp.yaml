@@ -7,7 +7,7 @@ scp:
   sbi:
     server:
       - address: 127.0.0.11
-        port: 7778
+        port: 80
     client:
       nrf:
-        - uri: http://127.0.0.10:7777
+        - uri: http://127.0.0.10:80
