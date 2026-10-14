@@ -35,10 +35,15 @@ PINNED_COLLECTOR_PUBLIC_KEY_SHA256 = os.environ[
 if COLLECTOR_PUBLIC_KEY_SHA256 != PINNED_COLLECTOR_PUBLIC_KEY_SHA256:
     raise RuntimeError("collector public-key fingerprint mismatch at startup")
 
-verifier_private_pem = os.environ["STAGE34_VERIFIER_PRIVATE_KEY_PEM"].encode("utf8")
-VERIFIER_PRIVATE_KEY = serialization.load_pem_private_key(
-    verifier_private_pem, password=None
-)
+_verifier_private_pem = os.environ.get("STAGE34_VERIFIER_PRIVATE_KEY_PEM")
+if _verifier_private_pem:
+    VERIFIER_PRIVATE_KEY = serialization.load_pem_private_key(
+        _verifier_private_pem.encode("utf8"), password=None
+    )
+    VERIFIER_KEY_ORIGIN = "render_environment"
+else:
+    VERIFIER_PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
+    VERIFIER_KEY_ORIGIN = "render_process_generated_ephemeral"
 if not isinstance(VERIFIER_PRIVATE_KEY, ec.EllipticCurvePrivateKey):
     raise RuntimeError("verifier private key must be EC")
 VERIFIER_PUBLIC_KEY_PEM = VERIFIER_PRIVATE_KEY.public_key().public_bytes(
@@ -236,6 +241,7 @@ class Handler(BaseHTTPRequestHandler):
                     "collector_public_key_sha256": COLLECTOR_PUBLIC_KEY_SHA256,
                     "verifier_public_key_sha256": VERIFIER_PUBLIC_KEY_SHA256,
                     "service_revision": SERVICE_REVISION,
+                    "verifier_key_origin": VERIFIER_KEY_ORIGIN,
                     "last_collector_sequence": LAST_COLLECTOR_SEQUENCE,
                 },
             )
@@ -282,7 +288,7 @@ def main():
         f"port={port} policy={APPROVED_POLICY_SHA256} "
         f"collector_key={COLLECTOR_PUBLIC_KEY_SHA256} "
         f"verifier_key={VERIFIER_PUBLIC_KEY_SHA256} "
-        f"revision={SERVICE_REVISION}",
+        f"key_origin={VERIFIER_KEY_ORIGIN} revision={SERVICE_REVISION}",
         flush=True,
     )
     server.serve_forever()
