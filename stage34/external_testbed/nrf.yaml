@@ -6,5 +6,5 @@ global:
 nrf:
   sbi:
     server:
-      - address: 127.0.0.10
+      - address: nrf
         port: 80
