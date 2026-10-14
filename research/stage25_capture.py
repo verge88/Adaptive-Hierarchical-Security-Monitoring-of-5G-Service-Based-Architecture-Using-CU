@@ -48,8 +48,16 @@ from .stage24_capture import (
 )
 
 
-def witness_supported_projection(obj: dict) -> dict:
-    """Project a Discovery-like object onto independently attestable NSSF facts."""
+def witness_supported_projection(
+    obj: dict,
+    known_registration_ids: set[str] | None = None,
+) -> dict:
+    """Project onto independently attestable NSSF facts.
+
+    nfRegisteredAtSource is derived from the NF-side registration UUID set.
+    It is intentionally included as an explicit witness-backed field so the
+    structural representation records membership evidence per returned profile.
+    """
     instances = obj.get("nfInstances")
     if not isinstance(instances, list):
         raise AssertionError("Projected object lacks nfInstances")
@@ -64,11 +72,17 @@ def witness_supported_projection(obj: dict) -> dict:
             raise AssertionError(
                 "NSSF profile lacks witness-supported identity/status"
             )
+        normalized_id = nf_id.lower()
         output.append(
             {
-                "nfInstanceId": nf_id.lower(),
+                "nfInstanceId": normalized_id,
                 "nfType": "NSSF",
                 "nfStatus": status,
+                "nfRegisteredAtSource": (
+                    normalized_id in known_registration_ids
+                    if known_registration_ids is not None
+                    else True
+                ),
             }
         )
 
@@ -76,8 +90,15 @@ def witness_supported_projection(obj: dict) -> dict:
     return {"nfInstances": output}
 
 
-def projected_fields(obj: dict, *, wire_bytes: int) -> dict:
-    projected = witness_supported_projection(obj)
+def projected_fields(
+    obj: dict,
+    *,
+    wire_bytes: int,
+    known_registration_ids: set[str] | None = None,
+) -> dict:
+    projected = witness_supported_projection(
+        obj, known_registration_ids
+    )
     return {
         "status": 200,
         "canonical_bytes": len(encode(projected)),
@@ -108,6 +129,9 @@ async def capture(seed: int):
     await await_scp_port()
     nrf_cid = await enable_native_nrf_instrumentation()
 
+    known_registration_ids = {
+        value.lower() for value in registration_ids.values()
+    }
     rng = random.Random(seed * 250025 + 41)
     telemetry = []
     common_path = []
@@ -118,13 +142,16 @@ async def capture(seed: int):
 
         async def trusted_witness():
             obj = await witness_object(registration_ids)
-            projected = witness_supported_projection(obj)
+            projected = witness_supported_projection(
+                obj, known_registration_ids
+            )
             # The witness is not a transport response. wire_bytes is an
             # informational field only; the frozen numeric detector consumes
             # canonical_bytes.
             return projected_fields(
                 projected,
                 wire_bytes=len(encode(projected)),
+                known_registration_ids=known_registration_ids,
             )
 
         async def consumer_copy():
@@ -139,7 +166,11 @@ async def capture(seed: int):
                     f"Compromised NRF discovery returned HTTP {response.status}"
                 )
             obj = json.loads(response.body)
-            return projected_fields(obj, wire_bytes=response.h2_bytes)
+            return projected_fields(
+                obj,
+                wire_bytes=response.h2_bytes,
+                known_registration_ids=known_registration_ids,
+            )
 
         if witness_first:
             trusted = await trusted_witness()
@@ -228,6 +259,7 @@ async def capture(seed: int):
             "nfInstanceId",
             "nfType",
             "nfStatus",
+            "nfRegisteredAtSource",
         ],
         "same_projection_applied_to_trusted_and_consumer": True,
         "numeric_channel_has_external_nrf_independent_reference": True,
