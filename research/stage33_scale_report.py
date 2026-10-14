@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .stage33_report import load_by_seed, score_seed, summarize, markdown
 
-EXPECTED_SEEDS = tuple(range(11001, 11129))
-EXPECTED_RUNNERS = 128
+EXPECTED_SEEDS = tuple(range(11001, 11257))
+EXPECTED_RUNNERS = 256
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
             "provenance": sorted(expected - set(provenance)),
         }
         raise AssertionError(
-            "Stage33 scale replication requires all 128 preregistered "
+            "Stage33 scale replication requires all 256 preregistered "
             f"runners; missing={missing}"
         )
 
@@ -47,7 +47,7 @@ def main():
         raise AssertionError("Stage33 scale runner count mismatch")
 
     summary["replication"] = {
-        "name": "stage33-scale-128-run-replication",
+        "name": "stage33-scale-256-run-replication",
         "runner_count": EXPECTED_RUNNERS,
         "seed_start": EXPECTED_SEEDS[0],
         "seed_end": EXPECTED_SEEDS[-1],
@@ -60,13 +60,13 @@ def main():
     report = markdown(summary)
     report = report.replace(
         "# Stage 33 — final independent external-verifier iteration",
-        "# Stage 33 — 128-run independent external-verifier replication",
+        "# Stage 33 — 256-run independent external-verifier replication",
         1,
     )
     report += (
         "\n## Replication lock\n\n"
-        "This replication used 128 fresh Open5GS runners "
-        "(seeds 11001..11128). The Stage-28 randomized attack generator, "
+        "This replication used 256 fresh Open5GS runners "
+        "(seeds 11001..11256). The Stage-28 randomized attack generator, "
         "Stage-29 invariant semantics, Stage-30 legitimate-transition "
         "schedule, Stage-33 policy, external decision rule, and external "
         "service identity were frozen before this block. Only the number of "
