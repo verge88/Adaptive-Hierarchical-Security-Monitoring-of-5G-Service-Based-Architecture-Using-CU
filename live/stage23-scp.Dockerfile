@@ -17,7 +17,8 @@ RUN git clone --branch "${OPEN5GS_REF}" --depth 1 https://github.com/open5gs/ope
 COPY live/stage23-sbi-path.c /tmp/stage23-sbi-path.c
 
 WORKDIR /src/open5gs
-RUN test "$(git describe --tags --exact-match)" = "v2.7.6" \
+RUN mkdir -p /var/log/open5gs \
+    && test "$(git describe --tags --exact-match)" = "v2.7.6" \
     && cp /tmp/stage23-sbi-path.c src/scp/sbi-path.c \
     && meson setup build \
     && ninja -C build src/scp/open5gs-scpd
