@@ -391,8 +391,15 @@ async def restart_testbed() -> dict:
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     for p in PLAN_ROOT.glob("*"):
         p.unlink(missing_ok=True)
-    for p in LOG_ROOT.glob("stage34-*.log"):
-        p.unlink(missing_ok=True)
+    for pattern in (
+        "stage34-*.log",
+        "nrf.log",
+        "scp.log",
+        "nssf1.log",
+        "nssf2.log",
+    ):
+        for p in LOG_ROOT.glob(pattern):
+            p.unlink(missing_ok=True)
 
     start_process("nrf", "/src/open5gs/build/src/nrf/open5gs-nrfd", "nrf.yaml")
     await asyncio.sleep(0.4)
