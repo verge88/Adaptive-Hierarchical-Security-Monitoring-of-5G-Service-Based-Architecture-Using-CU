@@ -1,0 +1,8 @@
+services:
+  nrf:
+    image: stage28-native-open5gs-nrf:v2.7.6
+    build:
+      context: ..
+      dockerfile: live/stage28-nrf.Dockerfile
+      args:
+        OPEN5GS_REF: v2.7.6
