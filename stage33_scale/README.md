@@ -1,4 +1,4 @@
-# Stage 33 — 128-run final replication
+# Stage 33 — 256-run final replication
 
 This branch repeats the final Stage-33 experiment at a substantially larger
 scale without changing the detector, attack generator, external verifier
@@ -6,14 +6,14 @@ decision rule, legitimate-transition schedule, or approved policy.
 
 ## Preregistered block
 
-- independent live Open5GS runners: **128**;
-- fresh runner identifiers: **11001..11128**;
+- independent live Open5GS runners: **256**;
+- fresh runner identifiers: **11001..11256**;
 - randomized attack episodes per runner: **12**;
-- total attack episodes: **1536**;
+- total attack episodes: **3072**;
 - private randomized schedules: one fresh plan per runner;
 - labels remain separate until every external signed verdict has completed.
 
-The capture matrix and external-decision matrix each use 128 jobs. This stays
+The capture matrix and external-decision matrix each use 256 jobs. This stays
 below the GitHub Actions matrix expansion ceiling while matching the largest
 earlier Open5GS runner block used in this research line.
 
