@@ -54,7 +54,7 @@ jobs:
       STAGE34_VERIFIER_ENDPOINT: https://stage34-external-relational-verifier.onrender.com
       STAGE34_POLICY_SHA256: cc5ec26107d7ac0dc7435d78f647c7425ffacd96858b9125aceff036d6ca3305
       STAGE34_COLLECTOR_KEY_SHA256: 6a4bb2dbfaf7276808295d3909176a2d6533111f4f01c9e4b7bcaeb8e27e7199
-      STAGE34_VERIFIER_KEY_SHA256: b20526e53a71782585d7e1504002ed6c6f17b2da05baa90813bc4fef5ea4d4bc
+      STAGE34_VERIFIER_KEY_SHA256: 0dcc0c51391a3de80631aa406f721f7c51d70a16b393e2d54463f6b2bce21698
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
