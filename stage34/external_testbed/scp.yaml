@@ -6,8 +6,8 @@ global:
 scp:
   sbi:
     server:
-      - address: 127.0.0.11
+      - address: scp
         port: 80
     client:
       nrf:
-        - uri: http://127.0.0.10:80
+        - uri: http://nrf:80
