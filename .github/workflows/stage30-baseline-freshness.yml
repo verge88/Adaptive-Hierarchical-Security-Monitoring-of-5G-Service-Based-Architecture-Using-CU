@@ -1,0 +1,230 @@
+name: Stage30 signed baseline freshness validation
+
+on:
+  push:
+    branches: ['stage30/signed-baseline-freshness']
+    paths:
+      - 'research/stage30_authority.py'
+      - 'research/stage30_capture.py'
+      - 'research/stage30_attestation.py'
+      - 'research/stage30_live_detect.py'
+      - 'research/stage30_report.py'
+      - 'stage30/**'
+      - 'stage30_tests/**'
+      - '.github/workflows/stage30-baseline-freshness.yml'
+      - 'live/stage28-nnrf-handler.c'
+      - 'live/stage28-nrf.Dockerfile'
+      - 'live/stage28-nrf-compose.yaml'
+  pull_request:
+    branches: ['stage29/attested-invariant-heldout']
+    paths:
+      - 'research/stage30_authority.py'
+      - 'research/stage30_capture.py'
+      - 'research/stage30_attestation.py'
+      - 'research/stage30_live_detect.py'
+      - 'research/stage30_report.py'
+      - 'stage30/**'
+      - 'stage30_tests/**'
+      - '.github/workflows/stage30-baseline-freshness.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage30-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Run Stage30 tests
+        run: |
+          python -m compileall -q research stage30_tests
+          python -m unittest discover -s stage30_tests -v
+
+  authority:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build signed-baseline epoch chain inputs
+        run: python -m research.stage30_authority --output stage30_authority
+      - name: Generate one ephemeral Ed25519 key and sign every epoch
+        run: |
+          PRIVATE_KEY="$RUNNER_TEMP/stage30-authority-private.pem"
+          openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
+          openssl pkey -in "$PRIVATE_KEY" -pubout -out stage30_authority/public.pem
+          for manifest in stage30_authority/baseline-*.json; do
+            signature="${manifest%.json}.sig"
+            openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$manifest" -out "$signature"
+            openssl pkeyutl -verify -rawin -pubin -inkey stage30_authority/public.pem -in "$manifest" -sigfile "$signature"
+          done
+          rm -f "$PRIVATE_KEY"
+          test ! -e "$PRIVATE_KEY"
+      - name: Prove private key is absent from authority artifact
+        run: test -z "$(find stage30_authority -type f -iname '*private*' -print -quit)"
+      - name: Upload signed epoch chain
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-authority
+          path: stage30_authority/
+          retention-days: 30
+
+  capture:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Validate compose
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml config -q
+      - name: Build frozen Stage28 randomized native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture legitimate transitions plus fresh randomized attacks
+        run: python -m research.stage30_capture --seed $((9701 + ${{ matrix.shard }})) --telemetry-output stage30_raw --labels-output stage30_private_labels
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml ps -a > diagnostics/ps.txt || true
+          docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml logs --no-color > diagnostics/compose.log 2>&1 || true
+      - name: Upload label-free raw telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-raw-${{ matrix.shard }}
+          path: |
+            stage30_raw/
+            diagnostics/
+          retention-days: 30
+      - name: Upload PRIVATE attack labels and NRF audit separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-labels-${{ matrix.shard }}
+          path: stage30_private_labels/
+          retention-days: 30
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  attestation-project:
+    needs: [authority, capture]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download signed authority epoch chain
+        uses: actions/download-artifact@v4
+        with:
+          name: stage30-authority
+          path: authority_input
+      - name: Download ONLY label-free raw telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage30-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove private attack labels and signing key are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+          test -z "$(find . -iname '*private*.pem' -print -quit)"
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Verify signed epoch chain and freshness
+        run: python -m research.stage30_attestation --raw-telemetry "${{ steps.raw.outputs.path }}" --authority-dir authority_input --output stage30_projected
+      - name: Upload verified projected telemetry and freshness audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-projected-${{ matrix.shard }}
+          path: stage30_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY verified projected telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage30-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove labels and private keys are absent
+        run: |
+          test -z "$(find detector_input -name private_labels.json -print -quit)"
+          test -z "$(find detector_input -name native_nrf_private.log -print -quit)"
+          test -z "$(find detector_input -iname '*private*.pem' -print -quit)"
+      - name: Run frozen Stage29 augmented detector
+        run: python -m research.stage30_live_detect --attested-telemetry detector_input/attested_telemetry.json --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json --output stage30_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-alarms-${{ matrix.shard }}
+          path: stage30_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage30 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage30-*
+          path: stage30_batches
+      - name: Join attack labels only after blind detection
+        run: python -m research.stage30_report --input stage30_batches --output stage30_report
+      - name: Publish Stage30 report
+        run: cat stage30_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage30 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage30-baseline-freshness-report
+          path: stage30_report/
+          retention-days: 90
