@@ -1,0 +1,179 @@
+name: Stage33 256-run external verifier replication
+
+on:
+  push:
+    branches: ['stage33-scale/256-run-replication']
+  workflow_dispatch:
+
+concurrency:
+  group: stage33-scale-256
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r live/requirements.txt cryptography
+      - name: Run frozen Stage33 tests and compile scale audit
+        run: |
+          python -m compileall -q research stage33 stage33_tests
+          python -m unittest discover -s stage33_tests -v
+          python -m py_compile research/stage33_scale_report.py
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rebuild frozen Stage33 policy
+        run: python -m research.stage33_policy --output stage33_scale_policy
+      - name: Enforce preregistered external policy digest
+        run: |
+          EXPECTED=c457e9ed7a121be8776ba3c77ec9d2b66ca205d9a0003a968ec8e6d0387fe6d3
+          ACTUAL="$(tr -d '\n' < stage33_scale_policy/policy.sha256)"
+          test "$ACTUAL" = "$EXPECTED"
+          echo "Frozen policy SHA-256: $ACTUAL" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-scale-policy
+          path: stage33_scale_policy/
+          retention-days: 90
+
+  capture:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Build frozen Stage28 native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture fresh 256-run replication block
+        run: python -m research.stage33_capture --seed $((11001 + ${{ matrix.shard }})) --telemetry-output stage33_scale_raw --labels-output stage33_scale_private_labels
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-scale-raw-${{ matrix.shard }}
+          path: stage33_scale_raw/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-scale-labels-${{ matrix.shard }}
+          path: stage33_scale_private_labels/
+          retention-days: 90
+      - name: Stop disposable Open5GS core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  external-decision:
+    needs: [policy-build, capture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255]
+    env:
+      STAGE33_ENDPOINT: https://stage33-5g-independent-verifier.onrender.com
+      STAGE33_PUBLIC_KEY_SHA256: a3432390f1c6ffbae131c39cd325699321becf4fee98b149b1b7c109983c9776
+      STAGE33_EXPECTED_SERVICE_REVISION: 90b4d642c933f0285a64a096aa9acc0b9012aa5d
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signature verifier
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-scale-policy
+          path: stage33_scale_policy
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-scale-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove private labels are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+      - name: Locate raw telemetry and provenance
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          PROV="$(find raw_input -name provenance.json -print -quit)"
+          test -n "$RAW"
+          test -n "$PROV"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+          echo "provenance=$PROV" >> "$GITHUB_OUTPUT"
+      - name: Obtain and verify signed external decision
+        run: |
+          python -m research.stage33_external_client             --endpoint "$STAGE33_ENDPOINT"             --expected-public-key-sha256 "$STAGE33_PUBLIC_KEY_SHA256"             --policy-sha256-file stage33_scale_policy/policy.sha256             --raw-telemetry "${{ steps.raw.outputs.path }}"             --output stage33_scale_external
+      - name: Enforce pinned external service revision
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          doc=json.loads(Path("stage33_scale_external/external_verdict.json").read_text())
+          actual=doc["external_service_revision"]
+          expected=os.environ["STAGE33_EXPECTED_SERVICE_REVISION"]
+          if actual != expected:
+              raise SystemExit(f"external service revision mismatch: {actual} != {expected}")
+          PY
+      - name: Build compact post-hoc audit package
+        run: |
+          mkdir stage33_scale_audit
+          cp stage33_scale_external/external_verdict.json stage33_scale_audit/
+          cp stage33_scale_external/external_public_key.pem stage33_scale_audit/
+          cp "${{ steps.raw.outputs.provenance }}" stage33_scale_audit/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-scale-audit-${{ matrix.shard }}
+          path: stage33_scale_audit/
+          retention-days: 90
+
+  audit:
+    needs: [capture, external-decision]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage33-scale-labels-*
+          path: stage33_scale_batches
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage33-scale-audit-*
+          path: stage33_scale_batches
+      - name: Join 256 private label sets only after all external decisions
+        run: python -m research.stage33_scale_report --input stage33_scale_batches --output stage33_scale_report
+      - name: Publish 256-run replication report
+        run: cat stage33_scale_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-scale-256-final-report
+          path: stage33_scale_report/
+          retention-days: 90
