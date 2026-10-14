@@ -1,0 +1,127 @@
+name: Stage32 external KMS root validation
+
+on:
+  push:
+    branches: ['stage32/external-kms-root']
+    paths:
+      - 'research/stage32_*.py'
+      - 'stage32/**'
+      - 'stage32_tests/**'
+      - '.github/workflows/stage32-external-kms-root.yml'
+  pull_request:
+    branches: ['stage31/github-anchored-authority-bundle']
+    paths:
+      - 'research/stage32_*.py'
+      - 'stage32/**'
+      - 'stage32_tests/**'
+      - '.github/workflows/stage32-external-kms-root.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - run: |
+          python -m compileall -q research stage32_tests
+          python -m unittest discover -s stage32_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m research.stage32_policy_bundle --output stage32_policy
+      - name: Show external approval digest
+        run: |
+          echo "## Stage 32 policy digest requiring external approval" >> "$GITHUB_STEP_SUMMARY"
+          cat stage32_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-policy
+          path: stage32_policy/
+          retention-days: 90
+
+  external-root:
+    needs: policy-build
+    if: ${{ vars.STAGE32_AWS_ROLE_ARN != '' && vars.STAGE32_AWS_REGION != '' && vars.STAGE32_SIGNER_FUNCTION != '' && vars.STAGE32_KMS_KEY_ARN != '' && vars.STAGE32_KMS_PUBLIC_KEY_SHA256 != '' }}
+    runs-on: ubuntu-24.04
+    environment: stage32-external
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.STAGE32_AWS_REGION }}
+      SIGNER_FUNCTION: ${{ vars.STAGE32_SIGNER_FUNCTION }}
+      KMS_KEY_ARN: ${{ vars.STAGE32_KMS_KEY_ARN }}
+      EXPECTED_PUBLIC_KEY_SHA256: ${{ vars.STAGE32_KMS_PUBLIC_KEY_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-policy
+          path: stage32_policy
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.STAGE32_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.STAGE32_AWS_REGION }}
+      - name: Request externally approved signature
+        run: |
+          DIGEST="$(tr -d '\n' < stage32_policy/policy.sha256)"
+          aws lambda invoke --function-name "$SIGNER_FUNCTION" --cli-binary-format raw-in-base64-out --payload "{\"digest_sha256\":\"$DIGEST\"}" signer-response.json >/dev/null
+          cp signer-response.json stage32_kms_receipt.json
+      - name: Retrieve and pin KMS public key
+        run: |
+          aws kms get-public-key --key-id "$KMS_KEY_ARN" --query PublicKey --output text | base64 -d > stage32_kms_public.der
+          openssl pkey -pubin -inform DER -in stage32_kms_public.der -out stage32_kms_public.pem
+          ACTUAL="$(sha256sum stage32_kms_public.pem | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_PUBLIC_KEY_SHA256"
+      - name: Verify external root
+        run: |
+          python -m research.stage32_external_verify             --policy stage32_policy/policy.json             --receipt stage32_kms_receipt.json             --public-key stage32_kms_public.pem             --expected-key-arn "$KMS_KEY_ARN"             --expected-public-key-sha256 "$EXPECTED_PUBLIC_KEY_SHA256"             --output stage32_external_verification.json
+      - name: Tamper negative control
+        run: |
+          cp stage32_policy/policy.json tampered_policy.json
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("tampered_policy.json")
+          b=bytearray(p.read_bytes())
+          b[len(b)//2] ^= 1
+          p.write_bytes(b)
+          PY
+          ! python -m research.stage32_external_verify             --policy tampered_policy.json             --receipt stage32_kms_receipt.json             --public-key stage32_kms_public.pem             --expected-key-arn "$KMS_KEY_ARN"             --expected-public-key-sha256 "$EXPECTED_PUBLIC_KEY_SHA256"             --output should_not_exist.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-external-root-evidence
+          path: |
+            stage32_external_verification.json
+            stage32_kms_receipt.json
+            stage32_kms_public.pem
+          retention-days: 90
+
+  integration-status:
+    needs: [policy-build, external-root]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: State validation boundary
+        run: |
+          if [ "${{ needs.external-root.result }}" = "success" ]; then
+            echo "External KMS root verified. The repository is ready for the held-out 8-runner Stage32 experiment." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Stage32 implementation is complete, but the independent external KMS root has not yet been connected/approved." >> "$GITHUB_STEP_SUMMARY"
+            echo "Deploy stage32/aws/stage32-external-root.yaml, approve the printed policy digest outside GitHub, and set the stage32-external environment variables." >> "$GITHUB_STEP_SUMMARY"
+          fi
