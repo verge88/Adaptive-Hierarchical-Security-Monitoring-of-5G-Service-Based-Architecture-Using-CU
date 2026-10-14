@@ -19,7 +19,7 @@
 
 #include "sbi-path.h"
 
-#include "third-party/cjson/cJSON.h"
+#include "sbi/openapi/external/cJSON.h"
 
 /*
  * Stage 23 research-only in-process integrity instrumentation.
