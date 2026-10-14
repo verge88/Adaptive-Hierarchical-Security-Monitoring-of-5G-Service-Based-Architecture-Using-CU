@@ -226,12 +226,16 @@ async def capture(seed: int):
         telemetry.append(row)
         common_path.append(common_path_projection(row))
 
-    log_text = await compose_output(["logs", "--no-color", "scp"])
-    labels = labels_from_native_scp_log(seed, log_text)
-
     container_id = (await compose_output(["ps", "-q", "scp"])).strip()
     if not container_id:
         raise AssertionError("Stage23 native SCP container is not running")
+    log_text = await command_output(
+        [
+            "docker", "exec", container_id, "cat",
+            "/var/log/open5gs/scp.log",
+        ]
+    )
+    labels = labels_from_native_scp_log(seed, log_text)
     binary_line = (
         await command_output(
             [
