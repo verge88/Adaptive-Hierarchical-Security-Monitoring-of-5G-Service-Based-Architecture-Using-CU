@@ -16,8 +16,19 @@ from research.stage25_live_detect import detect
 
 
 def _row(tick: int, trusted_obj: dict, consumer_obj: dict) -> dict:
-    trusted = projected_fields(trusted_obj, wire_bytes=1)
-    consumer = projected_fields(consumer_obj, wire_bytes=1)
+    known = {
+        item["nfInstanceId"].lower()
+        for item in trusted_obj.get("nfInstances", [])
+        if isinstance(item, dict)
+        and item.get("nfType") == "NSSF"
+        and isinstance(item.get("nfInstanceId"), str)
+    }
+    trusted = projected_fields(
+        trusted_obj, wire_bytes=1, known_registration_ids=known
+    )
+    consumer = projected_fields(
+        consumer_obj, wire_bytes=1, known_registration_ids=known
+    )
     return {
         "seed": 99201,
         "tick": tick,
@@ -66,7 +77,12 @@ class Stage25Tests(unittest.TestCase):
         self.assertEqual(len(projected["nfInstances"]), 2)
         self.assertEqual(
             set(projected["nfInstances"][0]),
-            {"nfInstanceId", "nfType", "nfStatus"},
+            {
+                "nfInstanceId",
+                "nfType",
+                "nfStatus",
+                "nfRegisteredAtSource",
+            },
         )
         self.assertTrue(
             all(x["nfType"] == "NSSF" for x in projected["nfInstances"])
