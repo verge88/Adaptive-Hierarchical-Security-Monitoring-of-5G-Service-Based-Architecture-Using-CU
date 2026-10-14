@@ -19,17 +19,14 @@ COPY live/stage23-sbi-path.c /tmp/stage23-sbi-path.c
 WORKDIR /src/open5gs
 RUN test "$(git describe --tags --exact-match)" = "v2.7.6" \
     && cp /tmp/stage23-sbi-path.c src/scp/sbi-path.c \
-    && meson setup build --prefix=/opt/open5gs \
-    && ninja -C build open5gs-scpd \
-    && ninja -C build install
+    && meson setup build \
+    && ninja -C build src/scp/open5gs-scpd
 
 LABEL org.opencontainers.image.source="https://github.com/open5gs/open5gs"
 LABEL org.opencontainers.image.version="v2.7.6"
 LABEL stage23.research.instrumentation="native-scp-inprocess-response"
 LABEL stage23.remote-control-surface="none"
 
-ENV PATH="/opt/open5gs/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/opt/open5gs/lib/x86_64-linux-gnu:/opt/open5gs/lib:${LD_LIBRARY_PATH}"
 ENV STAGE23_LAB_TAMPER=1
 
-ENTRYPOINT ["/opt/open5gs/bin/open5gs-scpd"]
+ENTRYPOINT ["/src/open5gs/build/src/scp/open5gs-scpd"]
