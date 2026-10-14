@@ -1,0 +1,50 @@
+name: Stage33 final external verifier experiment
+
+on:
+  push:
+    branches: ['stage33/external-verdict-service']
+  pull_request:
+    branches: ['stage32/external-kms-root']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - run: |
+          python -m compileall -q research stage33_tests
+          python -m unittest discover -s stage33_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m research.stage33_policy_bundle --output stage33_policy
+      - run: |
+          echo '## Stage 33 policy SHA-256' >> "$GITHUB_STEP_SUMMARY"
+          cat stage33_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-policy
+          path: stage33_policy/
+          retention-days: 90
+
+  integration-status:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo 'Stage33 implementation is ready.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Live final run requires external KMS approval and an external verifier service.' >> "$GITHUB_STEP_SUMMARY"
