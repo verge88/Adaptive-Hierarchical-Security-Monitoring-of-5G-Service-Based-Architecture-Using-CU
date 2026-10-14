@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: stage33-external-verifier
+    runtime: docker
+    dockerfilePath: ./stage33/Dockerfile
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /healthz
+    envVars:
+      - key: STAGE33_EXPECTED_KMS_KEY_ARN
+        sync: false
+      - key: STAGE33_EXPECTED_KMS_PUBLIC_KEY_SHA256
+        sync: false
+      - key: STAGE33_EXPECTED_POLICY_SHA256
+        sync: false
+      - key: STAGE33_VERDICT_PRIVATE_KEY_PEM_B64
+        sync: false
+      - key: STAGE33_API_TOKEN
+        sync: false
