@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: stage23-${{ github.ref }}
+  group: stage23-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
