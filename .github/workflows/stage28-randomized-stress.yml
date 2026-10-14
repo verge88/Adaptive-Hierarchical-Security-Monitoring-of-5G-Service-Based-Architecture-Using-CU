@@ -162,7 +162,203 @@ jobs:
           path: raw_input
       - name: Prove private schedule and signing key are absent
         run: |
-          if find . ( -name 'private_labels.json' -o -name 'native_nrf_private.log' -o -iname '*private*.pem' ) | grep -q .; then
+          if find . -type f -print | grep -Eq '/(private_labels\\.json|native_nrf_private\\.log|[^/]*private[^/]*\\.pem)
+            echo "Private Stage28 material leaked into verifier"
+            exit 1
+          fi
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Verify frozen authority and project detector inputs
+        run: |
+          python -m research.stage28_attestation             --raw-telemetry "${{ steps.raw.outputs.path }}"             --manifest authority_input/manifest.json             --signature authority_input/manifest.sig             --public-key authority_input/public.pem             --output stage28_projected
+      - name: Upload verified projected telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-projected-${{ matrix.shard }}
+          path: stage28_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY projected telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage28-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove labels, schedule and signing key are absent
+        run: |
+          if find detector_input -type f -print | grep -Eq '/(private_labels\\.json|[^/]*private[^/]*\\.pem)
+            echo "Private Stage28 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Run frozen Stage21 detector
+        run: |
+          python -m research.stage28_live_detect             --attested-telemetry detector_input/attested_telemetry.json             --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json             --output stage28_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-alarms-${{ matrix.shard }}
+          path: stage28_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage28 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage28-*
+          path: stage28_batches
+      - name: Join private randomized schedules post-hoc
+        run: |
+          python -m research.stage28_report             --input stage28_batches             --output stage28_report
+      - name: Publish Stage28 report
+        run: cat stage28_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage28 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-randomized-robustness-report
+          path: stage28_report/
+          retention-days: 90
+; then
+            echo "Private Stage28 material leaked into verifier"
+            exit 1
+          fi
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Verify frozen authority and project detector inputs
+        run: |
+          python -m research.stage28_attestation             --raw-telemetry "${{ steps.raw.outputs.path }}"             --manifest authority_input/manifest.json             --signature authority_input/manifest.sig             --public-key authority_input/public.pem             --output stage28_projected
+      - name: Upload verified projected telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-projected-${{ matrix.shard }}
+          path: stage28_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install HTTP2 transport
+        run: python -m pip install -r live/requirements.txt
+      - name: Download ONLY projected telemetry
+        uses: actions/download-artifact@v4
+        with:
+          name: stage28-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Prove labels, schedule and signing key are absent
+        run: |
+          if find detector_input ( -name 'private_labels.json' -o -iname '*private*.pem' ) | grep -q .; then
+            echo "Private Stage28 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Run frozen Stage21 detector
+        run: |
+          python -m research.stage28_live_detect             --attested-telemetry detector_input/attested_telemetry.json             --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json             --output stage28_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-alarms-${{ matrix.shard }}
+          path: stage28_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage28 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage28-*
+          path: stage28_batches
+      - name: Join private randomized schedules post-hoc
+        run: |
+          python -m research.stage28_report             --input stage28_batches             --output stage28_report
+      - name: Publish Stage28 report
+        run: cat stage28_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage28 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-randomized-robustness-report
+          path: stage28_report/
+          retention-days: 90
+; then
+            echo "Private Stage28 material leaked into blind detector"
+            exit 1
+          fi
+      - name: Run frozen Stage21 detector
+        run: |
+          python -m research.stage28_live_detect             --attested-telemetry detector_input/attested_telemetry.json             --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json             --output stage28_detector
+      - name: Upload blind alarms
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-alarms-${{ matrix.shard }}
+          path: stage28_detector/
+          retention-days: 30
+
+  audit:
+    needs: [authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all Stage28 artifacts after blind detection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage28-*
+          path: stage28_batches
+      - name: Join private randomized schedules post-hoc
+        run: |
+          python -m research.stage28_report             --input stage28_batches             --output stage28_report
+      - name: Publish Stage28 report
+        run: cat stage28_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audited Stage28 result
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage28-randomized-robustness-report
+          path: stage28_report/
+          retention-days: 90
+; then
             echo "Private Stage28 material leaked into verifier"
             exit 1
           fi
