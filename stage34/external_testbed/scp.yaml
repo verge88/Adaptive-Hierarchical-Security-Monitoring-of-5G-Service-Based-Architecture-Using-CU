@@ -1,0 +1,13 @@
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/scp.log
+global:
+scp:
+  sbi:
+    server:
+      - address: scp
+        port: 80
+    client:
+      nrf:
+        - uri: http://nrf:80
