@@ -27,6 +27,10 @@ on:
       - '.github/workflows/stage23-native-scp.yml'
   workflow_dispatch:
 
+concurrency:
+  group: stage23-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
