@@ -34,6 +34,8 @@ def load_by_seed(root: Path, filename: str) -> dict[int, dict]:
     output = {}
     for path in root.rglob(filename):
         doc = json.loads(path.read_text(encoding="utf8"))
+        if "seed" not in doc:
+            continue
         seed = int(doc["seed"])
         if seed in output:
             raise AssertionError(f"Duplicate {filename} for seed {seed}")
