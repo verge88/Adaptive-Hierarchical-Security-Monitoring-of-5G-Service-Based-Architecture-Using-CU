@@ -33,9 +33,9 @@ from h2.events import DataReceived, ResponseReceived, StreamEnded, StreamReset
 
 STAGE = 34
 OPEN5GS_REF = "v2.7.6"
-NRF_URL = "http://127.0.0.10:7777"
-SCP_URL = "http://127.0.0.11:7778"
-NRF_TARGET = "http://127.0.0.10:7777"
+NRF_URL = "http://127.0.0.10:80"
+SCP_URL = "http://127.0.0.11:80"
+NRF_TARGET = "http://127.0.0.10:80"
 NRF_PATH = "/nnrf-disc/v1/nf-instances?target-nf-type=NSSF&requester-nf-type=AMF"
 CONFIG_ROOT = Path("/opt/stage34")
 PLAN_ROOT = Path("/run/stage34")
