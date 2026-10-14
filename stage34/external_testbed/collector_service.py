@@ -261,7 +261,7 @@ async def h2_exchange(base: str, path: str, *, target: str | None = None, timeou
                 (":authority", url.netloc),
                 (":path", path),
                 ("accept", "application/json"),
-                ("user-agent", "AMF-Stage34-External-Collector"),
+                ("user-agent", "AMF"),
             ]
             if target is not None:
                 headers.append(("3gpp-sbi-target-apiroot", target))
@@ -308,6 +308,21 @@ async def discover() -> tuple[dict, bytes]:
     if status != 200:
         raise RuntimeError(f"NRF discovery via native SCP returned {status}")
     return json.loads(body), body
+
+
+def ensure_loopback_hosts() -> None:
+    marker = "# stage34-loopback-sbi"
+    mapping = (
+        "\n" + marker + "\n"
+        "127.0.0.10 nrf\n"
+        "127.0.0.11 scp\n"
+        "127.0.0.12 nssf\n"
+        "127.0.0.13 nssf2\n"
+    )
+    hosts = Path("/etc/hosts")
+    text = hosts.read_text(encoding="utf8")
+    if marker not in text:
+        hosts.write_text(text.rstrip() + mapping, encoding="utf8")
 
 
 def stop_processes() -> None:
@@ -371,6 +386,7 @@ async def wait_ready() -> dict:
 
 async def restart_testbed() -> dict:
     stop_processes()
+    ensure_loopback_hosts()
     PLAN_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     for p in PLAN_ROOT.glob("*"):
