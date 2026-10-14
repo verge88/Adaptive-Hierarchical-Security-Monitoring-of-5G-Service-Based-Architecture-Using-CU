@@ -1,0 +1,326 @@
+name: Stage32 external KMS root validation
+
+on:
+  push:
+    branches: ['stage32/external-kms-root']
+    paths:
+      - 'research/stage32_*.py'
+      - 'stage32/**'
+      - 'stage32_tests/**'
+      - '.github/workflows/stage32-external-kms-root.yml'
+  pull_request:
+    branches: ['stage31/github-anchored-authority-bundle']
+    paths:
+      - 'research/stage32_*.py'
+      - 'stage32/**'
+      - 'stage32_tests/**'
+      - '.github/workflows/stage32-external-kms-root.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - run: |
+          python -m compileall -q research stage32_tests
+          python -m unittest discover -s stage32_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m research.stage32_policy_bundle --output stage32_policy
+      - name: Show external approval digest
+        run: |
+          echo "## Stage 32 policy digest requiring external approval" >> "$GITHUB_STEP_SUMMARY"
+          cat stage32_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-policy
+          path: stage32_policy/
+          retention-days: 90
+
+  external-root:
+    needs: policy-build
+    if: ${{ vars.STAGE32_AWS_ROLE_ARN != '' && vars.STAGE32_AWS_REGION != '' && vars.STAGE32_SIGNER_FUNCTION != '' && vars.STAGE32_KMS_KEY_ARN != '' && vars.STAGE32_KMS_PUBLIC_KEY_SHA256 != '' }}
+    runs-on: ubuntu-24.04
+    environment: stage32-external
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.STAGE32_AWS_REGION }}
+      SIGNER_FUNCTION: ${{ vars.STAGE32_SIGNER_FUNCTION }}
+      KMS_KEY_ARN: ${{ vars.STAGE32_KMS_KEY_ARN }}
+      EXPECTED_PUBLIC_KEY_SHA256: ${{ vars.STAGE32_KMS_PUBLIC_KEY_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-policy
+          path: stage32_policy
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.STAGE32_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.STAGE32_AWS_REGION }}
+      - name: Request externally approved signature
+        run: |
+          DIGEST="$(tr -d '\n' < stage32_policy/policy.sha256)"
+          aws lambda invoke --function-name "$SIGNER_FUNCTION" --cli-binary-format raw-in-base64-out --payload "{\"digest_sha256\":\"$DIGEST\"}" signer-response.json >/dev/null
+          cp signer-response.json stage32_kms_receipt.json
+      - name: Retrieve and pin KMS public key
+        run: |
+          aws kms get-public-key --key-id "$KMS_KEY_ARN" --query PublicKey --output text | base64 -d > stage32_kms_public.der
+          openssl pkey -pubin -inform DER -in stage32_kms_public.der -out stage32_kms_public.pem
+          ACTUAL="$(sha256sum stage32_kms_public.pem | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_PUBLIC_KEY_SHA256"
+      - name: Verify external root
+        run: |
+          python -m research.stage32_external_verify             --policy stage32_policy/policy.json             --receipt stage32_kms_receipt.json             --public-key stage32_kms_public.pem             --expected-key-arn "$KMS_KEY_ARN"             --expected-public-key-sha256 "$EXPECTED_PUBLIC_KEY_SHA256"             --output stage32_external_verification.json
+      - name: Tamper negative control
+        run: |
+          cp stage32_policy/policy.json tampered_policy.json
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("tampered_policy.json")
+          b=bytearray(p.read_bytes())
+          b[len(b)//2] ^= 1
+          p.write_bytes(b)
+          PY
+          ! python -m research.stage32_external_verify             --policy tampered_policy.json             --receipt stage32_kms_receipt.json             --public-key stage32_kms_public.pem             --expected-key-arn "$KMS_KEY_ARN"             --expected-public-key-sha256 "$EXPECTED_PUBLIC_KEY_SHA256"             --output should_not_exist.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-external-root-evidence
+          path: |
+            stage32_external_verification.json
+            stage32_kms_receipt.json
+            stage32_kms_public.pem
+          retention-days: 90
+
+  integration-status:
+    needs: [policy-build, external-root]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: State validation boundary
+        run: |
+          if [ "${{ needs.external-root.result }}" = "success" ]; then
+            echo "External KMS root verified. The repository is ready for the held-out 8-runner Stage32 experiment." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Stage32 implementation is complete, but the independent external KMS root has not yet been connected/approved." >> "$GITHUB_STEP_SUMMARY"
+            echo "Deploy stage32/aws/stage32-external-root.yaml, approve the printed policy digest outside GitHub, and set the stage32-external environment variables." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+
+  authority:
+    needs: external-root
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build frozen Stage30 epoch chain
+        run: python -m research.stage30_authority --output stage32_authority
+      - name: Sign lower-layer epochs with ephemeral Ed25519 key
+        run: |
+          PRIVATE_KEY="$RUNNER_TEMP/stage32-authority-private.pem"
+          openssl genpkey -algorithm ED25519 -out "$PRIVATE_KEY"
+          openssl pkey -in "$PRIVATE_KEY" -pubout -out stage32_authority/public.pem
+          for manifest in stage32_authority/baseline-*.json; do
+            signature="${manifest%.json}.sig"
+            openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$manifest" -out "$signature"
+          done
+          rm -f "$PRIVATE_KEY"
+          test ! -e "$PRIVATE_KEY"
+      - name: Package and attest lower-layer authority bundle
+        run: |
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf stage32_authority_bundle.tar.gz -C stage32_authority .
+      - uses: actions/attest@v4
+        with:
+          subject-path: stage32_authority_bundle.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-authority-bundle
+          path: stage32_authority_bundle.tar.gz
+          retention-days: 30
+
+  capture:
+    needs: external-root
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - name: Build native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture fresh held-out Stage32 block
+        run: python -m research.stage32_capture --seed $((9901 + ${{ matrix.shard }})) --telemetry-output stage32_raw --labels-output stage32_private_labels
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-raw-${{ matrix.shard }}
+          path: stage32_raw/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-labels-${{ matrix.shard }}
+          path: stage32_private_labels/
+          retention-days: 30
+      - name: Stop disposable core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  attestation-project:
+    needs: [external-root, authority, capture]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STAGE32_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/stage32-external-kms-root.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-external-root-evidence
+          path: external_root
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-authority-bundle
+          path: authority_delivery
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Verify Stage31 GitHub provenance before extraction
+        run: |
+          gh attestation verify authority_delivery/stage32_authority_bundle.tar.gz -R "$GITHUB_REPOSITORY" --signer-workflow "$STAGE32_SIGNER_WORKFLOW" --source-digest "$GITHUB_SHA" --format json > github_attestation_verification.json
+          test -s github_attestation_verification.json
+      - name: Prove modified lower-layer bundle is rejected
+        run: |
+          cp authority_delivery/stage32_authority_bundle.tar.gz tampered_authority_bundle.tar.gz
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("tampered_authority_bundle.tar.gz")
+          b=bytearray(p.read_bytes())
+          b[len(b)//2] ^= 1
+          p.write_bytes(b)
+          PY
+          ! gh attestation verify tampered_authority_bundle.tar.gz -R "$GITHUB_REPOSITORY" --signer-workflow "$STAGE32_SIGNER_WORKFLOW" --source-digest "$GITHUB_SHA"
+      - name: Record GitHub verification marker
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path("authority_delivery/stage32_authority_bundle.tar.gz")
+          Path("github_attestation_marker.json").write_text(json.dumps({
+            "github_artifact_attestation_verified": True,
+            "tampered_bundle_rejected": True,
+            "repository": os.environ["GITHUB_REPOSITORY"],
+            "source_digest": os.environ["GITHUB_SHA"],
+            "signer_workflow": os.environ["STAGE32_SIGNER_WORKFLOW"],
+            "authority_bundle_sha256": hashlib.sha256(p.read_bytes()).hexdigest()
+          }, indent=2))
+          PY
+      - name: Extract lower-layer authority bundle
+        run: |
+          mkdir authority_input
+          tar -xzf authority_delivery/stage32_authority_bundle.tar.gz -C authority_input
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Compose external root, bundle provenance and epoch freshness
+        run: |
+          python -m research.stage32_attestation             --raw-telemetry "${{ steps.raw.outputs.path }}"             --authority-dir authority_input             --github-verification-marker github_attestation_marker.json             --github-verification-json github_attestation_verification.json             --external-root-verification external_root/stage32_external_verification.json             --output stage32_projected
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-projected-${{ matrix.shard }}
+          path: stage32_projected/
+          retention-days: 30
+
+  blind-detect:
+    needs: attestation-project
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage32-projected-${{ matrix.shard }}
+          path: detector_input
+      - name: Run frozen detector
+        run: python -m research.stage32_live_detect --attested-telemetry detector_input/attested_telemetry.json --compromised-pair-telemetry detector_input/compromised_pair_telemetry.json --output stage32_detector
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-alarms-${{ matrix.shard }}
+          path: stage32_detector/
+          retention-days: 30
+
+  audit:
+    needs: [external-root, authority, capture, attestation-project, blind-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage32-*
+          path: stage32_batches
+      - name: Join labels only after blind detection
+        run: python -m research.stage32_report --input stage32_batches --output stage32_report
+      - name: Publish Stage32 report
+        run: cat stage32_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage32-external-kms-root-report
+          path: stage32_report/
+          retention-days: 90
