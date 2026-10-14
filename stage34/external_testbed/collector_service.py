@@ -337,6 +337,17 @@ def start_process(name: str, binary: str, config: str) -> subprocess.Popen:
     return proc
 
 
+def diagnostic_state() -> str:
+    parts = []
+    for name, proc in PROCESSES.items():
+        parts.append(f"{name}:poll={proc.poll()}")
+        path = LOG_ROOT / f"stage34-{name}-stdout.log"
+        if path.exists():
+            tail = path.read_text(errors="replace")[-1200:]
+            parts.append(f"{name}:tail={tail}")
+    return " | ".join(parts)
+
+
 async def wait_ready() -> dict:
     last = ""
     for _ in range(120):
@@ -350,7 +361,12 @@ async def wait_ready() -> dict:
         except Exception as ex:
             last = f"{type(ex).__name__}: {ex}"
         await asyncio.sleep(0.5)
-    raise RuntimeError("external Open5GS testbed failed readiness: " + last[-600:])
+    raise RuntimeError(
+        "external Open5GS testbed failed readiness: "
+        + last[-600:]
+        + " diagnostics="
+        + diagnostic_state()
+    )
 
 
 async def restart_testbed() -> dict:
@@ -572,6 +588,11 @@ class Handler(BaseHTTPRequestHandler):
         except PermissionError as ex:
             self._send(403, {"error": str(ex)})
         except Exception as ex:
+            print(
+                "STAGE34_COLLECTOR_ERROR "
+                f"{type(ex).__name__}: {ex}",
+                flush=True,
+            )
             self._send(422, {"error": f"{type(ex).__name__}: {ex}"})
 
     def log_message(self, fmt, *args):
