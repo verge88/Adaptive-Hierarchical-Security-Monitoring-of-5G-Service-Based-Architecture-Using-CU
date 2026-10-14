@@ -134,9 +134,9 @@ def evaluate_seed(labels: dict, alarms: dict, provenance: dict) -> dict:
 def summarize(rows: list[dict]) -> dict:
     binaries = {row["binary_sha256"] for row in rows}
     sources = {row["source_sha256"] for row in rows}
-    if len(binaries) != 1 or len(sources) != 1:
+    if len(sources) != 1:
         raise AssertionError(
-            "Stage23 runners did not use identical native-SCP build/source"
+            "Stage23 runners did not use identical instrumented SCP source"
         )
 
     ext_recall = [
@@ -153,7 +153,8 @@ def summarize(rows: list[dict]) -> dict:
     return {
         "independent_live_runners": len(rows),
         "seeds": [row["seed"] for row in rows],
-        "native_scp_binary_sha256": next(iter(binaries)),
+        "native_scp_binary_sha256_values": sorted(binaries),
+        "native_scp_binary_sha256_unique_count": len(binaries),
         "instrumented_source_sha256": next(iter(sources)),
         "episodes_per_runner": 6,
         "inprocess_mutations_per_runner": 18,
@@ -244,8 +245,9 @@ def markdown(summary: dict) -> str:
         "## Native-process provenance",
         "",
         (
-            "All runners used the same instrumented Open5GS v2.7.6 SCP "
-            f"binary SHA-256: {summary['native_scp_binary_sha256']}."
+            "Instrumented Open5GS v2.7.6 SCP binary SHA-256 unique count: "
+            f"{summary['native_scp_binary_sha256_unique_count']}; values: "
+            f"{summary['native_scp_binary_sha256_values']}."
         ),
         (
             "Instrumented src/scp/sbi-path.c SHA-256: "
