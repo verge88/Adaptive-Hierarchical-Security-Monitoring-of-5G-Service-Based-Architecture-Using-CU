@@ -311,6 +311,7 @@ async def capture(seed: int):
 
     raw_rows = []
     for tick in range(schedule["total_ticks"]):
+        witness_first = bool(secrets.randbelow(2))
         consumer_count, consumer_registered = await consumer_counts()
 
         # Deliberate common-source compromise: ordinary witness software
@@ -322,6 +323,7 @@ async def capture(seed: int):
             {
                 "seed": seed,
                 "tick": tick,
+                "witness_first": witness_first,
                 "consumer_nssf_count": consumer_count,
                 "consumer_registered_count": consumer_registered,
                 "compromised_witness_nssf_count": witness_count,
