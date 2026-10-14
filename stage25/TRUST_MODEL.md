@@ -30,8 +30,7 @@ feature is calculated.
 | structural | value-free structure of P(.) |
 | semantic | stable scalar values of P(.) |
 
-The projection contains only NSSF `nfInstanceId`, `nfType`, and
-`nfStatus`. Consequently Stage 25 proves independence for all detector
+The projection contains only NSSF `nfInstanceId`, `nfType`, `nfStatus`, and the derived `nfRegisteredAtSource` membership fact. Consequently Stage 25 proves independence for all detector
 channels **on that monitored representation**. It does not extend the witness
 to service endpoints, priorities, load metadata, PLMN attributes, or other NRF
 fields that are not independently reconstructed.
