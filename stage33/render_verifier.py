@@ -42,14 +42,22 @@ def expected_state(tick: int) -> tuple[int, int]:
     return (1, 1) if 30 <= tick < 40 else (2, 2)
 
 
-PRIVATE_KEY_PEM = os.environ["STAGE33_PRIVATE_KEY_PEM"].encode("utf8")
 APPROVED_POLICY_SHA256 = os.environ["STAGE33_APPROVED_POLICY_SHA256"].lower()
 SERVICE_REVISION = os.environ.get("STAGE33_SERVICE_REVISION", "unrecorded")
 
 if len(APPROVED_POLICY_SHA256) != 64:
     raise RuntimeError("STAGE33_APPROVED_POLICY_SHA256 must be SHA-256 hex")
 
-PRIVATE_KEY = serialization.load_pem_private_key(PRIVATE_KEY_PEM, password=None)
+_private_pem = os.environ.get("STAGE33_PRIVATE_KEY_PEM")
+if _private_pem:
+    PRIVATE_KEY = serialization.load_pem_private_key(
+        _private_pem.encode("utf8"), password=None
+    )
+    KEY_ORIGIN = "render_environment"
+else:
+    PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
+    KEY_ORIGIN = "render_process_generated_ephemeral"
+
 if not isinstance(PRIVATE_KEY, ec.EllipticCurvePrivateKey):
     raise RuntimeError("Stage33 signing key must be an EC private key")
 
@@ -173,6 +181,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service_revision": SERVICE_REVISION,
                     "approved_policy_sha256": APPROVED_POLICY_SHA256,
                     "public_key_sha256": PUBLIC_KEY_SHA256,
+                    "key_origin": KEY_ORIGIN,
                 },
             )
             return
@@ -215,7 +224,7 @@ def main():
     print(
         "STAGE33_EXTERNAL_VERIFIER_READY "
         f"port={port} policy={APPROVED_POLICY_SHA256} "
-        f"public_key_sha256={PUBLIC_KEY_SHA256}",
+        f"public_key_sha256={PUBLIC_KEY_SHA256} key_origin={KEY_ORIGIN}",
         flush=True,
     )
     server.serve_forever()
