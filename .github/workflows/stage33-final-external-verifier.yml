@@ -113,3 +113,117 @@ jobs:
         run: |
           curl --fail --silent --show-error "$VERIFIER_URL/healthz" > health.json
           python -c "import json; d=json.load(open('health.json')); assert d['stage']==33 and d['external_execution'] is True"
+
+  capture:
+    needs: [external-root, external-verifier-config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - name: Build frozen native NRF
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml build nrf
+      - name: Start isolated Open5GS core
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml up -d --pull always
+      - name: Capture final held-out block
+        run: python -m research.stage33_capture --seed $((10001 + ${{ matrix.shard }})) --telemetry-output stage33_raw --labels-output stage33_private_labels
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-raw-${{ matrix.shard }}
+          path: stage33_raw/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-labels-${{ matrix.shard }}
+          path: stage33_private_labels/
+          retention-days: 30
+      - name: Stop disposable core
+        if: always()
+        run: docker compose -f live/compose.yaml -f live/stage5-compose.yaml -f live/stage14-scp-compose.yaml -f live/stage28-nrf-compose.yaml down --remove-orphans || true
+
+  external-detect:
+    needs: [policy-build, external-root, external-verifier-config, capture]
+    runs-on: ubuntu-24.04
+    environment: stage33-external-verifier
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      VERIFIER_URL: ${{ vars.STAGE33_EXTERNAL_VERIFIER_URL }}
+      VERIFIER_TOKEN: ${{ secrets.STAGE33_EXTERNAL_VERIFIER_API_TOKEN }}
+      EXPECTED_VERIFIER_KEY_SHA256: ${{ vars.STAGE33_VERIFIER_PUBLIC_KEY_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r live/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-policy
+          path: stage33_policy
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-external-root-evidence
+          path: external_root
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage33-raw-${{ matrix.shard }}
+          path: raw_input
+      - name: Prove private labels are absent
+        run: |
+          test -z "$(find . -name private_labels.json -print -quit)"
+          test -z "$(find . -name native_nrf_private.log -print -quit)"
+      - name: Locate raw telemetry
+        id: raw
+        run: |
+          RAW="$(find raw_input -name raw_telemetry.json -print -quit)"
+          test -n "$RAW"
+          echo "path=$RAW" >> "$GITHUB_OUTPUT"
+      - name: Submit label-free telemetry to independent verifier
+        run: |
+          python -m research.stage33_submit --url "$VERIFIER_URL" --api-token "$VERIFIER_TOKEN" --raw-telemetry "${{ steps.raw.outputs.path }}" --policy stage33_policy/policy.json --kms-receipt external_root/stage33_kms_receipt.json --kms-public-key external_root/stage33_kms_public.pem --output stage33_external_response.json
+      - name: Verify external signed verdict without recomputing alarms
+        run: |
+          POLICY_SHA="$(tr -d '\n' < stage33_policy/policy.sha256)"
+          python -m research.stage33_verify_verdict --response stage33_external_response.json --raw-telemetry "${{ steps.raw.outputs.path }}" --expected-verifier-public-key-sha256 "$EXPECTED_VERIFIER_KEY_SHA256" --expected-policy-sha256 "$POLICY_SHA" --output stage33_verified
+      - name: External-service policy tamper control
+        run: |
+          cp stage33_policy/policy.json tampered_policy.json
+          python -c "from pathlib import Path; p=Path('tampered_policy.json'); b=bytearray(p.read_bytes()); b[len(b)//2]^=1; p.write_bytes(b)"
+          ! python -m research.stage33_submit --url "$VERIFIER_URL" --api-token "$VERIFIER_TOKEN" --raw-telemetry "${{ steps.raw.outputs.path }}" --policy tampered_policy.json --kms-receipt external_root/stage33_kms_receipt.json --kms-public-key external_root/stage33_kms_public.pem --output should_not_exist.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-external-verdict-${{ matrix.shard }}
+          path: stage33_verified/
+          retention-days: 90
+
+  audit:
+    needs: [capture, external-detect]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage33-*
+          path: stage33_batches
+      - name: Join labels only after external signed verdicts exist
+        run: python -m research.stage33_report --input stage33_batches --output stage33_report
+      - name: Publish final report
+        run: cat stage33_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage33-final-external-verifier-report
+          path: stage33_report/
+          retention-days: 90
