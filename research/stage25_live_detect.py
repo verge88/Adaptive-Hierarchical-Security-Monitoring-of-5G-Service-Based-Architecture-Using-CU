@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .stage20_live_detect import detect as stage20_detect
 from .stage21_live_detect import FROZEN_STAGE21, detect as stage21_detect
 
 
@@ -23,8 +24,21 @@ def detect(external_rows: list[dict], common_rows: list[dict]) -> dict:
 
     external = stage21_detect(external_rows)
     common = stage21_detect(common_rows)
+    external20 = stage20_detect(external_rows)
+    common20 = stage20_detect(common_rows)
     if external["seed"] != common["seed"]:
         raise ValueError("Stage25 telemetry/control seed mismatch")
+
+    ext20 = {int(row["tick"]): row for row in external20["ticks"]}
+    com20 = {int(row["tick"]): row for row in common20["ticks"]}
+    for row in external["ticks"]:
+        row["stage20_structural_alert"] = ext20[int(row["tick"])][
+            "stage20_structural_alert"
+        ]
+    for row in common["ticks"]:
+        row["stage20_structural_alert"] = com20[int(row["tick"])][
+            "stage20_structural_alert"
+        ]
 
     return {
         "seed": external["seed"],
