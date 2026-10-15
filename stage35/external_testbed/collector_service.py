@@ -43,8 +43,15 @@ VERIFIER_TOKEN = os.environ["STAGE35_COLLECTOR_TO_VERIFIER_TOKEN"]
 MAX_BODY = 128_000
 SOAK_TICKS = 300
 
-private_pem = os.environ["STAGE35_COLLECTOR_PRIVATE_KEY_PEM"].encode("utf8")
-PRIVATE_KEY = serialization.load_pem_private_key(private_pem, password=None)
+_private_pem = os.environ.get("STAGE35_COLLECTOR_PRIVATE_KEY_PEM")
+if _private_pem:
+    PRIVATE_KEY = serialization.load_pem_private_key(
+        _private_pem.encode("utf8"), password=None
+    )
+    KEY_ORIGIN = "render_environment"
+else:
+    PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
+    KEY_ORIGIN = "render_process_generated_ephemeral"
 if not isinstance(PRIVATE_KEY, ec.EllipticCurvePrivateKey):
     raise RuntimeError("collector private key must be EC")
 PUBLIC_KEY_PEM = PRIVATE_KEY.public_key().public_bytes(
@@ -59,7 +66,12 @@ PUBLIC_KEY_SHA256 = hashlib.sha256(PUBLIC_KEY_PEM).hexdigest()
 os.environ.setdefault("STAGE34_POLICY_SHA256", POLICY_SHA256)
 os.environ.setdefault("STAGE34_COLLECTOR_REVISION", SERVICE_REVISION)
 os.environ.setdefault(
-    "STAGE34_COLLECTOR_PRIVATE_KEY_PEM", private_pem.decode("utf8")
+    "STAGE34_COLLECTOR_PRIVATE_KEY_PEM",
+    PRIVATE_KEY.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("utf8"),
 )
 _spec = importlib.util.spec_from_file_location(
     "stage34_collector_helpers",
@@ -534,6 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service_revision": SERVICE_REVISION,
                     "telemetry_origin": "external_open5gs_testbed",
                     "direct_verifier_transport": True,
+                    "collector_key_origin": KEY_ORIGIN,
                 },
             )
             return
@@ -600,7 +613,7 @@ def main():
     print(
         "STAGE35_TRANSITION_COLLECTOR_READY "
         f"port={port} policy={POLICY_SHA256} key={PUBLIC_KEY_SHA256} "
-        f"revision={SERVICE_REVISION}",
+        f"key_origin={KEY_ORIGIN} revision={SERVICE_REVISION}",
         flush=True,
     )
     server.serve_forever()
