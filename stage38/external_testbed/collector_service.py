@@ -341,6 +341,17 @@ def start_slot(slot: str):
     return start_process(slot, BINARIES[row["type"]], row["config"])
 
 
+def process_diagnostics() -> dict:
+    result = {}
+    for name, proc in PROCESSES.items():
+        row = {"poll": proc.poll()}
+        log_path = LOG_ROOT / f"stage38-{name}-stdout.log"
+        if log_path.exists():
+            row["log_tail"] = log_path.read_text(errors="replace")[-2500:]
+        result[name] = row
+    return result
+
+
 async def wait_counts(expected: dict[str, int], timeout: float = 12.0) -> dict:
     deadline = time.time() + timeout
     last = None
@@ -355,7 +366,7 @@ async def wait_counts(expected: dict[str, int], timeout: float = 12.0) -> dict:
         except Exception as ex:
             last = f"{type(ex).__name__}: {ex}"
         await asyncio.sleep(0.1)
-    raise RuntimeError(f"multi-NF convergence failed: {last}")
+    raise RuntimeError(f"multi-NF convergence failed: {last}; diagnostics={process_diagnostics()}")
 
 
 def active_counts(active_slots: set[str]) -> dict[str, int]:
