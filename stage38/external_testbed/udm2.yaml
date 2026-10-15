@@ -1,0 +1,17 @@
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/udm2.log
+global:
+udm:
+  hnet:
+    - id: 1
+      scheme: 1
+      key: /opt/stage38/hnet/curve25519-1.key
+  sbi:
+    server:
+      - address: 127.0.0.19
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80
