@@ -4,7 +4,7 @@ from pathlib import Path
 path = Path("/src/open5gs/lib/sbi/context.c")
 text = path.read_text()
 
-include_needle = '#include "context.h"\n'
+include_needle = '#include "ogs-sbi.h"\n'
 include_insert = include_needle + '#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n'
 if "STAGE38_WITNESS_DIR" not in text:
     if include_needle not in text:
