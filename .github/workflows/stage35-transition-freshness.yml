@@ -1,0 +1,175 @@
+name: Stage35 transition freshness availability experiment
+
+on:
+  push:
+    branches: ['stage35/persistent-transition-adversarial']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r live/requirements.txt cryptography h2
+      - name: Run Stage35 tests
+        run: |
+          python -m compileall -q research stage35 stage35_tests
+          python -m unittest discover -s stage35_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build deterministic Stage35 policy
+        run: python -m research.stage35_policy --output stage35_policy
+      - name: Publish Stage35 policy digest
+        run: |
+          cat stage35_policy/policy.sha256
+          echo "### Stage35 policy SHA-256" >> "$GITHUB_STEP_SUMMARY"
+          cat stage35_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-policy
+          path: stage35_policy/
+          retention-days: 90
+
+
+  heldout-live:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      STAGE35_COLLECTOR_ENDPOINT: https://stage35-transition-collector.onrender.com
+      STAGE35_VERIFIER_A_ENDPOINT: https://stage35-transition-verifier-a.onrender.com
+      STAGE35_POLICY_SHA256: 9faf8018c8dc64de3a40fac3c4afe15cdf4696c32ad6c6af5a79014b99f38128
+      STAGE35_COLLECTOR_KEY_SHA256: 7fc5eb661ae0257dd0b417ab83d3cd9ac10a2a1daf2fb7c27c51b170b7df316e
+      STAGE35_VERIFIER_KEY_SHA256: de003a26bee38e0a0f8cbe8ca34da801aa9c0747edb2050cdf74fc08382d7c5b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signature dependencies
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage35-policy
+          path: stage35_policy
+      - name: Enforce preregistered policy
+        run: |
+          ACTUAL="$(tr -d '\n' < stage35_policy/policy.sha256)"
+          test "$ACTUAL" = "$STAGE35_POLICY_SHA256"
+      - name: Run 16 fresh transition-window experiments
+        run: |
+          set -euo pipefail
+          mkdir -p stage35_evidence stage35_labels
+          for seed in $(seq 13001 13016); do
+            echo "=== Stage35 seed $seed ==="
+            ok=0
+            for attempt in 1 2; do
+              rm -rf "stage35_evidence/$seed" "stage35_labels/$seed"
+              if python -m research.stage35_external_client \
+                --seed "$seed" \
+                --collector-endpoint "$STAGE35_COLLECTOR_ENDPOINT" \
+                --verifier-a-endpoint "$STAGE35_VERIFIER_A_ENDPOINT" \
+                --policy-sha256-file stage35_policy/policy.sha256 \
+                --expected-collector-key-sha256 "$STAGE35_COLLECTOR_KEY_SHA256" \
+                --expected-verifier-key-sha256 "$STAGE35_VERIFIER_KEY_SHA256" \
+                --output "stage35_evidence/$seed" \
+                --labels-output "stage35_labels/$seed"; then
+                ok=1
+                break
+              fi
+              echo "orchestration retry seed=$seed attempt=$attempt" >&2
+              sleep 5
+            done
+            test "$ok" = 1
+          done
+      - name: Prove complete blind evidence and labels
+        run: |
+          test "$(find stage35_evidence -name evidence.json | wc -l)" -eq 16
+          test "$(find stage35_evidence -name signed_verdict.json | wc -l)" -eq 16
+          test "$(find stage35_labels -name private_labels.json | wc -l)" -eq 16
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-external-evidence
+          path: stage35_evidence/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-private-labels
+          path: stage35_labels/
+          retention-days: 90
+
+  benchmark:
+    needs: heldout-live
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      STAGE35_COLLECTOR_ENDPOINT: https://stage35-transition-collector.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage35-policy
+          path: stage35_policy
+      - name: Run 100-request full verifier+anchor benchmark
+        run: |
+          python -m research.stage35_benchmark_client \
+            --collector-endpoint "$STAGE35_COLLECTOR_ENDPOINT" \
+            --policy-sha256-file stage35_policy/policy.sha256 \
+            --iterations 100 \
+            --output stage35_benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-benchmark
+          path: stage35_benchmark.json
+          retention-days: 90
+
+  audit:
+    needs: [heldout-live, benchmark]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage35-external-evidence
+          path: stage35_batches/evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage35-private-labels
+          path: stage35_batches/labels
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage35-benchmark
+          path: stage35_batches/benchmark
+      - name: Join labels only after external signed decisions
+        run: |
+          python -m research.stage35_report \
+            --input stage35_batches \
+            --benchmark stage35_batches/benchmark/stage35_benchmark.json \
+            --output stage35_report
+      - name: Publish Stage35 report
+        run: cat stage35_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-transition-freshness-report
+          path: stage35_report/
+          retention-days: 90
