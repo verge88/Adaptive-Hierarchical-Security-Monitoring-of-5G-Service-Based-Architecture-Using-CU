@@ -9,7 +9,7 @@ POLICY = {
     "stage": 38,
     "schema": "stage38-multi-nf-witness-policy-v1",
     "open5gs_ref": "v2.7.6",
-    "nf_types": ["NSSF", "AUSF", "BSF", "AMF"],
+    "nf_types": ["NSSF", "AUSF", "BSF", "UDM"],
     "slots": {
         "nssf1": {"type": "NSSF", "endpoint": "127.0.0.12"},
         "nssf2": {"type": "NSSF", "endpoint": "127.0.0.13"},
@@ -17,8 +17,8 @@ POLICY = {
         "ausf2": {"type": "AUSF", "endpoint": "127.0.0.15"},
         "bsf1": {"type": "BSF", "endpoint": "127.0.0.16"},
         "bsf2": {"type": "BSF", "endpoint": "127.0.0.17"},
-        "amf1": {"type": "AMF", "endpoint": "127.0.0.18"},
-        "amf2": {"type": "AMF", "endpoint": "127.0.0.19"},
+        "udm1": {"type": "UDM", "endpoint": "127.0.0.18"},
+        "udm2": {"type": "UDM", "endpoint": "127.0.0.19"},
     },
     "scenario_generator": {
         "topology_templates": 8,
