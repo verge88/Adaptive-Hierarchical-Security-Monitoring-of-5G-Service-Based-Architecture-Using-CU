@@ -390,6 +390,7 @@ async def run_experiment(seed: int, challenge_nonce: str) -> dict:
         "collector_package_sha256": hashlib.sha256(
             canonical_bytes(package)
         ).hexdigest(),
+        "telemetry_package": package,
         "collector_signature_base64": collector_signature,
         "verifier_result": verifier_result,
         "private_labels": labels,
