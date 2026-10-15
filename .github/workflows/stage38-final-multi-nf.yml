@@ -1,0 +1,305 @@
+name: Stage38 final multi-NF witness validation
+
+on:
+  push:
+    branches: ['stage38/multi-nf-witness']
+    paths:
+      - '.github/workflows/stage38-final-multi-nf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage38-final-multi-nf
+  cancel-in-progress: false
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install cryptography
+      - name: Compile frozen Stage38 implementation
+        run: python -m compileall -q stage38 research/stage38_*.py
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build deterministic Stage38 policy
+        run: python -m research.stage38_policy --output stage38_policy
+      - name: Record frozen implementation
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\n' < stage38_policy/policy.sha256)" = "1c7da33bbe05ec845455f38e85329a54e0826de3fe529ea5db5fafe6be4d0542"
+          mkdir -p stage38_freeze
+          {
+            echo "final_workflow_commit=$GITHUB_SHA"
+            echo "render_deployed_commit=537b0eda6300e40a3efefefab088d40c4d3ebf03"
+            echo "detector_frozen_before_final_seeds=true"
+            echo "smoke_seeds=17991..17998"
+            echo "final_seeds=18001..18256"
+            sha256sum               live/stage38-nnrf-handler.c               stage38/patch_sbi_context.py               stage38/deployment_witness.py               stage38/external_testbed/collector_service.py               stage38/multi_nf_verifier_service.py               stage38/state_anchor_service.py               research/stage38_policy.py               research/stage38_external_client.py               research/stage38_report.py
+          } > stage38_freeze/FROZEN_MANIFEST.txt
+          cp stage38_policy/policy.sha256 stage38_freeze/policy.sha256
+          cat stage38_freeze/FROZEN_MANIFEST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-policy
+          path: stage38_policy/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-frozen-manifest
+          path: stage38_freeze/
+          retention-days: 90
+
+  heldout-live:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      STAGE38_COLLECTOR_ENDPOINT: https://stage38-multi-nf-collector.onrender.com
+      STAGE38_VERIFIER_A_ENDPOINT: https://stage38-multi-nf-verifier-a.onrender.com
+      STAGE38_VERIFIER_B_ENDPOINT: https://stage38-multi-nf-verifier-b.onrender.com
+      STAGE38_ANCHOR_ENDPOINT: https://stage38-multi-nf-anchor.onrender.com
+      STAGE38_POLICY_SHA256: 1c7da33bbe05ec845455f38e85329a54e0826de3fe529ea5db5fafe6be4d0542
+      STAGE38_COLLECTOR_KEY_SHA256: f16db65f4b4bef781e7723903e9a00c19d0c5770bb58e15a6937f3e0fce14ffa
+      STAGE38_WITNESS_KEY_SHA256: b7f1a1a372e4f81c91feeb028b6e96691d0d6be3970666149f727b151574881f
+      STAGE38_VERIFIER_KEY_SHA256: 061fe394c428600d7807d53d54abcae847032f0cffc0dd2b5a2de202ff317479
+      STAGE38_EXPECTED_REVISION: stage38-final-frozen-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signature dependencies
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage38-policy
+          path: stage38_policy
+      - name: Enforce frozen policy
+        run: |
+          ACTUAL="$(tr -d '\n' < stage38_policy/policy.sha256)"
+          test "$ACTUAL" = "$STAGE38_POLICY_SHA256"
+      - name: Warm and verify frozen Stage38 Render services
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            name="$1"; url="$2"
+            for attempt in $(seq 1 180); do
+              echo "readiness $name attempt=$attempt"
+              if curl -fsS --connect-timeout 10 --max-time 30 "$url" > "/tmp/$name.json"; then
+                cat "/tmp/$name.json"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          wait_ready anchor "$STAGE38_ANCHOR_ENDPOINT/health"
+          wait_ready verifier_a "$STAGE38_VERIFIER_A_ENDPOINT/health"
+          wait_ready verifier_b "$STAGE38_VERIFIER_B_ENDPOINT/health"
+          wait_ready collector "$STAGE38_COLLECTOR_ENDPOINT/health"
+
+          python - <<'PY'
+          import json, os, urllib.request
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.loads(r.read())
+
+          collector = get(os.environ["STAGE38_COLLECTOR_ENDPOINT"] + "/health")
+          ck = get(os.environ["STAGE38_COLLECTOR_ENDPOINT"] + "/public-key")
+          wk = get(os.environ["STAGE38_COLLECTOR_ENDPOINT"] + "/witness-public-key")
+          va = get(os.environ["STAGE38_VERIFIER_A_ENDPOINT"] + "/health")
+          vb = get(os.environ["STAGE38_VERIFIER_B_ENDPOINT"] + "/health")
+          anchor = get(os.environ["STAGE38_ANCHOR_ENDPOINT"] + "/health")
+
+          assert collector["policy_sha256"] == os.environ["STAGE38_POLICY_SHA256"]
+          assert collector["nf_types"] == ["NSSF","AUSF","BSF","UDM"]
+          assert collector["nf_instance_slots"] == 8
+          assert collector["witness_uses_nrf_discovery"] is False
+          assert collector["service_revision"] == os.environ["STAGE38_EXPECTED_REVISION"]
+          assert ck["public_key_sha256"] == os.environ["STAGE38_COLLECTOR_KEY_SHA256"]
+          assert wk["public_key_sha256"] == os.environ["STAGE38_WITNESS_KEY_SHA256"]
+
+          for doc in (va, vb):
+              assert doc["policy_sha256"] == os.environ["STAGE38_POLICY_SHA256"]
+              assert doc["collector_public_key_sha256"] == os.environ["STAGE38_COLLECTOR_KEY_SHA256"]
+              assert doc["witness_public_key_sha256"] == os.environ["STAGE38_WITNESS_KEY_SHA256"]
+              assert doc["service_revision"] == os.environ["STAGE38_EXPECTED_REVISION"]
+              assert doc["nf_types"] == ["NSSF","AUSF","BSF","UDM"]
+              assert doc["witness_required"] is True
+
+          assert anchor["policy_sha256"] == os.environ["STAGE38_POLICY_SHA256"]
+          assert anchor["service_revision"] == os.environ["STAGE38_EXPECTED_REVISION"]
+          print("STAGE38_FINAL_READINESS_OK")
+          PY
+
+      - name: Run 256 fresh multi-NF held-out scenarios
+        run: |
+          set -euo pipefail
+          mkdir -p stage38_evidence stage38_labels stage38_meta
+          printf "seed\tattempt\tstatus\tstarted_at\tended_at\n" > stage38_meta/attempts.tsv
+
+          for seed in $(seq 18001 18256); do
+            echo "=== Stage38 final seed $seed ==="
+            ok=0
+            for attempt in 1 2 3; do
+              started="$(date -u +%FT%TZ)"
+              rm -rf "stage38_evidence/$seed" "stage38_labels/$seed"
+              if python -m research.stage38_external_client                 --seed "$seed"                 --collector-endpoint "$STAGE38_COLLECTOR_ENDPOINT"                 --verifier-a-endpoint "$STAGE38_VERIFIER_A_ENDPOINT"                 --policy-sha256-file stage38_policy/policy.sha256                 --expected-collector-key-sha256 "$STAGE38_COLLECTOR_KEY_SHA256"                 --expected-verifier-key-sha256 "$STAGE38_VERIFIER_KEY_SHA256"                 --expected-witness-key-sha256 "$STAGE38_WITNESS_KEY_SHA256"                 --output "stage38_evidence/$seed"                 --labels-output "stage38_labels/$seed"; then
+                ended="$(date -u +%FT%TZ)"
+                printf "%s\t%s\tsuccess\t%s\t%s\n" "$seed" "$attempt" "$started" "$ended" >> stage38_meta/attempts.tsv
+                ok=1
+                break
+              else
+                ended="$(date -u +%FT%TZ)"
+                printf "%s\t%s\tfailure\t%s\t%s\n" "$seed" "$attempt" "$started" "$ended" >> stage38_meta/attempts.tsv
+                sleep 4
+              fi
+            done
+            test "$ok" = 1
+          done
+
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          rows=list(csv.DictReader(open("stage38_meta/attempts.tsv"), delimiter="\t"))
+          seeds={}
+          for row in rows:
+              seeds.setdefault(row["seed"], []).append(row)
+          total=len(seeds)
+          summary={
+              "runs_requested":256,
+              "runs_completed":total,
+              "first_attempt_successes":sum(1 for rs in seeds.values() if rs[0]["status"]=="success"),
+              "seeds_retried":sum(1 for rs in seeds.values() if len(rs)>1),
+              "failed_attempts":sum(1 for row in rows if row["status"]=="failure"),
+              "total_attempts":len(rows),
+          }
+          summary["first_attempt_success_rate"]=summary["first_attempt_successes"]/total if total else 0
+          Path("stage38_meta/attempt_summary.json").write_text(json.dumps(summary, indent=2)+"\n")
+          print(json.dumps(summary, indent=2))
+          assert total == 256
+          PY
+
+      - name: Prove complete blind evidence set
+        run: |
+          test "$(find stage38_evidence -name telemetry_package.json | wc -l)" -eq 256
+          test "$(find stage38_evidence -name signed_verdict.json | wc -l)" -eq 256
+          test "$(find stage38_evidence -name evidence.json | wc -l)" -eq 256
+          test "$(find stage38_labels -name private_labels.json | wc -l)" -eq 256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-external-evidence
+          path: stage38_evidence/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-private-labels
+          path: stage38_labels/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-attempt-metadata
+          path: stage38_meta/
+          retention-days: 90
+
+  audit:
+    needs: heldout-live
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage38-external-evidence
+          path: stage38_batches/evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage38-private-labels
+          path: stage38_batches/labels
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage38-attempt-metadata
+          path: stage38_batches/meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage38-frozen-manifest
+          path: stage38_batches/freeze
+      - name: Join private labels only after signed decisions
+        run: |
+          python -m research.stage38_report             --input stage38_batches             --output stage38_report             --seed-start 18001             --seed-end 18256
+
+      - name: Enforce multi-NF coverage
+        run: |
+          python - <<'PY'
+          import json
+          s=json.load(open("stage38_report/summary.json"))
+          assert s["runs"] == 256
+          assert s["unique_private_plan_hashes"] == 256
+          assert s["nf_types"] == ["NSSF","AUSF","BSF","UDM"]
+          assert s["nf_instance_slots"] == 8
+          assert s["topology_template_run_counts"] == {
+              "0":32,"1":32,"2":32,"3":32,
+              "4":32,"5":32,"6":32,"7":32,
+          }
+          assert set(s["by_nf_type"]) == {"NSSF","AUSF","BSF","UDM"}
+          assert set(s["by_family"]) == {
+              "identity_replacement","endpoint_substitution","service_injection",
+              "fqdn_substitution","nf_type_substitution",
+              "compound_identity_service",
+          }
+          assert set(s["by_target_slot"]) == {
+              "nssf1","nssf2","ausf1","ausf2",
+              "bsf1","bsf2","udm1","udm2",
+          }
+          assert set(s["by_variant"]) == {"1","2","3","4"}
+          assert set(s["by_simultaneous_count"]) == {"1","2"}
+          assert s["compound_attack_entries"] > 0
+          print(json.dumps(s, indent=2))
+          PY
+
+      - name: Append final provenance
+        run: |
+          {
+            echo
+            echo "## Stage38 final provenance"
+            echo
+            echo "- Final untouched seed range: 18001..18256 (256 runs)."
+            echo "- Smoke/development seeds 17991..17998 are excluded."
+            echo "- Detector, native mutation logic and witness-binding rules were frozen before the final seed range."
+            echo "- Four real Open5GS NF types are tested: NSSF, AUSF, BSF and UDM; two instances of each."
+            echo "- Reference UUID/type/endpoint bindings are checked against signed NF-side process evidence that does not use NRF discovery."
+            echo "- The witness remains in the same Render service/container trust boundary; it is an independent observation path, not an independent physical host."
+            echo
+            echo "### Attempt statistics"
+            echo '~~~json'
+            cat stage38_batches/meta/attempt_summary.json
+            echo '~~~'
+            echo
+            echo "### Frozen implementation manifest"
+            echo '~~~text'
+            cat stage38_batches/freeze/FROZEN_MANIFEST.txt
+            echo '~~~'
+          } >> stage38_report/REPORT.md
+          cat stage38_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-final-multi-nf-report
+          path: stage38_report/
+          retention-days: 90
