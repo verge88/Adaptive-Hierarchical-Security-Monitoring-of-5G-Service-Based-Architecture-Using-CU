@@ -126,6 +126,115 @@ def state_counts(projection: dict) -> tuple[int, int]:
     return count, registered
 
 
+SLOT_ENDPOINTS = {
+    "nssf1": "127.0.0.12",
+    "nssf2": "127.0.0.13",
+}
+
+
+def slot_profile(projection: dict, slot: str):
+    endpoint = SLOT_ENDPOINTS[slot]
+    matches = []
+    for nf_id, attrs in projection.get("profiles", {}).items():
+        if endpoint in (attrs.get("ipv4Addresses") or []):
+            matches.append((nf_id, attrs))
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def same_slot(
+    observed: dict,
+    reference: dict,
+    slot: str,
+    *,
+    allow_identity_change: bool,
+) -> bool:
+    left = slot_profile(observed, slot)
+    right = slot_profile(reference, slot)
+    if left is None or right is None:
+        return False
+    left_id, left_attrs = left
+    right_id, right_attrs = right
+    if not allow_identity_change and left_id != right_id:
+        return False
+    return canonical_bytes(left_attrs) == canonical_bytes(right_attrs)
+
+
+def only_known_slots(projection: dict) -> bool:
+    assigned = set()
+    for slot in SLOT_ENDPOINTS:
+        item = slot_profile(projection, slot)
+        if item is not None:
+            assigned.add(item[0])
+    return assigned == set(projection.get("profiles", {}))
+
+
+def transition_relational_alert(
+    projection: dict,
+    refs: dict,
+    phase: str,
+) -> bool:
+    if phase == "steady_pre":
+        return not projection_equal(projection, refs["initial"])
+    if phase in ("steady_post", "clean_soak"):
+        return not projection_equal(projection, refs["after_restart"])
+
+    if not only_known_slots(projection):
+        return True
+
+    if phase == "stop_transition":
+        # nssf1 is stable. nssf2 may still be present or may already be gone.
+        if not same_slot(
+            projection, refs["initial"], "nssf1",
+            allow_identity_change=False,
+        ):
+            return True
+        nssf2 = slot_profile(projection, "nssf2")
+        if nssf2 is None:
+            return False
+        return not same_slot(
+            projection, refs["initial"], "nssf2",
+            allow_identity_change=False,
+        )
+
+    if phase == "start_transition":
+        # nssf1 is stable. The starting nssf2 may be absent or may have a new
+        # runtime UUID; endpoint/service bindings must already match the
+        # authorized new state.
+        if not same_slot(
+            projection, refs["after_stop"], "nssf1",
+            allow_identity_change=False,
+        ):
+            return True
+        nssf2 = slot_profile(projection, "nssf2")
+        if nssf2 is None:
+            return False
+        return not same_slot(
+            projection, refs["after_start"], "nssf2",
+            allow_identity_change=True,
+        )
+
+    if phase == "restart_transition":
+        # nssf2 is stable. Restarting nssf1 may be absent or return under a
+        # new runtime UUID, but all bound attributes must match the authorized
+        # post-restart slot state.
+        if not same_slot(
+            projection, refs["after_start"], "nssf2",
+            allow_identity_change=False,
+        ):
+            return True
+        nssf1 = slot_profile(projection, "nssf1")
+        if nssf1 is None:
+            return False
+        return not same_slot(
+            projection, refs["after_restart"], "nssf1",
+            allow_identity_change=True,
+        )
+
+    raise ValueError(f"unknown transition phase {phase}")
+
+
 def verify_package(package: dict, collector_signature: str) -> dict:
     started = time.perf_counter()
 
@@ -188,8 +297,8 @@ def verify_package(package: dict, collector_signature: str) -> dict:
             raise ValueError(f"unknown transition phase {phase}")
 
         projection = row["projection"]
-        relational_alert = not any(
-            projection_equal(projection, refs[name]) for name in allowed_names
+        relational_alert = transition_relational_alert(
+            projection, refs, phase
         )
 
         observed_counts = state_counts(projection)
