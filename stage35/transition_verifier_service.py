@@ -44,8 +44,15 @@ if COLLECTOR_PUBLIC_KEY_SHA256 != os.environ[
 ].lower():
     raise RuntimeError("collector public-key fingerprint mismatch")
 
-private_pem = os.environ["STAGE35_VERIFIER_PRIVATE_KEY_PEM"].encode("utf8")
-PRIVATE_KEY = serialization.load_pem_private_key(private_pem, password=None)
+_private_pem = os.environ.get("STAGE35_VERIFIER_PRIVATE_KEY_PEM")
+if _private_pem:
+    PRIVATE_KEY = serialization.load_pem_private_key(
+        _private_pem.encode("utf8"), password=None
+    )
+    KEY_ORIGIN = "render_environment"
+else:
+    PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
+    KEY_ORIGIN = "render_process_generated_ephemeral"
 if not isinstance(PRIVATE_KEY, ec.EllipticCurvePrivateKey):
     raise RuntimeError("verifier private key must be EC")
 PUBLIC_KEY_PEM = PRIVATE_KEY.public_key().public_bytes(
@@ -271,6 +278,7 @@ class Handler(BaseHTTPRequestHandler):
                     "verifier_instance": INSTANCE_NAME,
                     "freshness_anchor_endpoint": ANCHOR_ENDPOINT,
                     "client_authentication_required": True,
+                    "verifier_key_origin": KEY_ORIGIN,
                 },
             )
             return
@@ -323,7 +331,7 @@ def main():
         "STAGE35_TRANSITION_VERIFIER_READY "
         f"instance={INSTANCE_NAME} port={port} policy={POLICY_SHA256} "
         f"collector_key={COLLECTOR_PUBLIC_KEY_SHA256} "
-        f"verifier_key={PUBLIC_KEY_SHA256}",
+        f"verifier_key={PUBLIC_KEY_SHA256} key_origin={KEY_ORIGIN}",
         flush=True,
     )
     server.serve_forever()
