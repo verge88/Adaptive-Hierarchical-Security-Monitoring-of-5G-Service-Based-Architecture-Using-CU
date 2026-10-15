@@ -74,7 +74,7 @@ def process_cmdline(pid: int) -> list[str] | None:
     return [x.decode(errors="replace") for x in raw.split(b"\0") if x]
 
 
-def snapshot(nonce: str) -> dict:
+def snapshot(nonce: str, snapshot_label: str) -> dict:
     records = {}
     for path in WITNESS_DIR.glob("*.tsv"):
         try:
@@ -112,6 +112,7 @@ def snapshot(nonce: str) -> dict:
         "schema": "stage38-nf-side-witness-v1",
         "policy_sha256": POLICY_SHA256,
         "challenge_nonce": nonce,
+        "snapshot_label": snapshot_label,
         "slots": {k: records[k] for k in sorted(records)},
         "source": "nf_runtime_uuid+proc_cmdline+direct_sbi_socket",
         "nrf_discovery_used": False,
@@ -165,9 +166,12 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             doc = json.loads(self.rfile.read(length))
             nonce = str(doc["challenge_nonce"])
+            snapshot_label = str(doc["snapshot_label"])
             if len(nonce) < 32 or len(nonce) > 256:
                 raise ValueError("invalid nonce")
-            self.send_json(200, snapshot(nonce))
+            if not snapshot_label or len(snapshot_label) > 80:
+                raise ValueError("invalid snapshot label")
+            self.send_json(200, snapshot(nonce, snapshot_label))
         except Exception as ex:
             self.send_json(422, {"error": f"{type(ex).__name__}: {ex}"})
 
