@@ -121,7 +121,7 @@ static unsigned long *stage38_counter_for(const char *target_type)
     if (!strcmp(target_type, "NSSF")) return &nssf;
     if (!strcmp(target_type, "AUSF")) return &ausf;
     if (!strcmp(target_type, "BSF")) return &bsf;
-    if (!strcmp(target_type, "AMF")) return &amf;
+    if (!strcmp(target_type, "UDM")) return &amf;
     return NULL;
 }
 
@@ -318,7 +318,7 @@ static bool stage38_nf_type_substitution(
     cJSON *profile = stage38_profile_by_slot(instances, slot);
     cJSON *type = profile ?
         cJSON_GetObjectItemCaseSensitive(profile, "nfType") : NULL;
-    const char *types[] = {"NSSF", "AUSF", "BSF", "AMF"};
+    const char *types[] = {"NSSF", "AUSF", "BSF", "UDM"};
     const char *replacement;
     int index = (variant - 1) % 4;
 
@@ -1415,7 +1415,7 @@ bool nrf_nnrf_handle_nf_discover(
                         discovery_option->tai.tac.v);
         }
         if (discovery_option->guami_presence) {
-            ogs_debug("guami[PLMN_ID:%06x,AMF_ID:%x]",
+            ogs_debug("guami[PLMN_ID:%06x,UDM_ID:%x]",
                         ogs_plmn_id_hexdump(
                             &discovery_option->guami.plmn_id),
                         ogs_amf_id_hexdump(
