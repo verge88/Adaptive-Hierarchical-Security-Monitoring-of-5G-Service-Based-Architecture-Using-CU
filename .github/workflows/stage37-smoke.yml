@@ -1,8 +1,6 @@
 name: Stage37 randomized topology smoke
 
 on:
-  push:
-    branches: ['stage37/randomized-topology']
   workflow_dispatch:
 
 permissions:
