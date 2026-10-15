@@ -66,9 +66,11 @@ jobs:
     env:
       STAGE35_COLLECTOR_ENDPOINT: https://stage35-transition-collector.onrender.com
       STAGE35_VERIFIER_A_ENDPOINT: https://stage35-transition-verifier-a.onrender.com
+      STAGE35_VERIFIER_B_ENDPOINT: https://stage35-replay-verifier-b.onrender.com
+      STAGE35_ANCHOR_ENDPOINT: https://stage35-freshness-anchor.onrender.com
       STAGE35_POLICY_SHA256: 9faf8018c8dc64de3a40fac3c4afe15cdf4696c32ad6c6af5a79014b99f38128
       STAGE35_COLLECTOR_KEY_SHA256: 7fc5eb661ae0257dd0b417ab83d3cd9ac10a2a1daf2fb7c27c51b170b7df316e
-      STAGE35_VERIFIER_KEY_SHA256: de003a26bee38e0a0f8cbe8ca34da801aa9c0747edb2050cdf74fc08382d7c5b
+      STAGE35_VERIFIER_KEY_SHA256: 9b8373933e763eed81468065e9ad9b2a5ad40ed2cb01e29de3ee7f37e8d93474
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,16 +86,55 @@ jobs:
         run: |
           ACTUAL="$(tr -d '\n' < stage36_policy/policy.sha256)"
           test "$ACTUAL" = "$STAGE35_POLICY_SHA256"
+      - name: Warm and verify all Render services
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            name="$1"
+            url="$2"
+            for attempt in $(seq 1 60); do
+              echo "readiness $name attempt=$attempt"
+              if curl -fsS --connect-timeout 10 --max-time 30 "$url" > "/tmp/${name}.json"; then
+                cat "/tmp/${name}.json"
+                return 0
+              fi
+              sleep 5
+            done
+            echo "$name did not become ready" >&2
+            return 1
+          }
+
+          wait_ready collector "$STAGE35_COLLECTOR_ENDPOINT/health"
+          wait_ready verifier_a "$STAGE35_VERIFIER_A_ENDPOINT/health"
+          wait_ready verifier_b "$STAGE35_VERIFIER_B_ENDPOINT/health"
+          wait_ready anchor "$STAGE35_ANCHOR_ENDPOINT/health"
+
+          python - <<'PY'
+          import json, os, urllib.request
+
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.loads(r.read())
+
+          collector = get(os.environ["STAGE35_COLLECTOR_ENDPOINT"] + "/public-key")
+          verifier = get(os.environ["STAGE35_VERIFIER_A_ENDPOINT"] + "/public-key")
+          assert collector["public_key_sha256"] == os.environ["STAGE35_COLLECTOR_KEY_SHA256"]
+          assert verifier["public_key_sha256"] == os.environ["STAGE35_VERIFIER_KEY_SHA256"]
+          health = get(os.environ["STAGE35_VERIFIER_A_ENDPOINT"] + "/health")
+          assert health["verifier_key_origin"] == "render_environment", health
+          print("RENDER_READINESS_OK", collector["public_key_sha256"], verifier["public_key_sha256"])
+          PY
+
       - name: Run 768 fresh transition-window experiments
         run: |
           set -euo pipefail
           mkdir -p stage36_evidence stage36_labels stage36_meta
           printf "seed\tattempt\tstatus\tstarted_at\tended_at\n" > stage36_meta/attempts.tsv
 
-          for seed in $(seq 14001 14768); do
+          for seed in $(seq 15001 15768); do
             echo "=== Stage36 seed $seed ==="
             ok=0
-            for attempt in 1 2; do
+            for attempt in 1 2 3; do
               started="$(date -u +%FT%TZ)"
               rm -rf "stage36_evidence/$seed" "stage36_labels/$seed"
               if python -m research.stage35_external_client \
@@ -233,7 +274,7 @@ jobs:
             echo
             echo "## Stage36 final validation provenance"
             echo
-            echo "- Fresh runs: 768 (seeds 14001..14768)"
+            echo "- Fresh runs: 768 (seeds 15001..15768)"
             echo "- Attack schedule/detector/verifier logic: frozen from Stage35 commit bd89dd851c5ebf1dae21d688dc9976224615e8c9"
             echo "- Benchmark requests: 1000"
             echo
