@@ -1,0 +1,45 @@
+name: Stage35 transition freshness availability experiment
+
+on:
+  push:
+    branches: ['stage35/persistent-transition-adversarial']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r live/requirements.txt cryptography h2
+      - name: Run Stage35 tests
+        run: |
+          python -m compileall -q research stage35 stage35_tests
+          python -m unittest discover -s stage35_tests -v
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build deterministic Stage35 policy
+        run: python -m research.stage35_policy --output stage35_policy
+      - name: Publish Stage35 policy digest
+        run: |
+          cat stage35_policy/policy.sha256
+          echo "### Stage35 policy SHA-256" >> "$GITHUB_STEP_SUMMARY"
+          cat stage35_policy/policy.sha256 >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage35-policy
+          path: stage35_policy/
+          retention-days: 90
