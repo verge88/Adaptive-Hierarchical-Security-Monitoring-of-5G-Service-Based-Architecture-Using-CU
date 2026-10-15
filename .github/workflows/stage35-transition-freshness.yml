@@ -52,9 +52,9 @@ jobs:
     env:
       STAGE35_COLLECTOR_ENDPOINT: https://stage35-transition-collector.onrender.com
       STAGE35_VERIFIER_A_ENDPOINT: https://stage35-transition-verifier-a.onrender.com
-      STAGE35_POLICY_SHA256: 7bc2fa9d132e6070c486eeefd7960d14566c8d195e653986e507453b8ba334dd
+      STAGE35_POLICY_SHA256: 9faf8018c8dc64de3a40fac3c4afe15cdf4696c32ad6c6af5a79014b99f38128
       STAGE35_COLLECTOR_KEY_SHA256: 7fc5eb661ae0257dd0b417ab83d3cd9ac10a2a1daf2fb7c27c51b170b7df316e
-      STAGE35_VERIFIER_KEY_SHA256: 717471bf88257ac8f89d39c1a1fbea0bd797f15975a89c19dd5f0d565d9fee47
+      STAGE35_VERIFIER_KEY_SHA256: de003a26bee38e0a0f8cbe8ca34da801aa9c0747edb2050cdf74fc08382d7c5b
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
