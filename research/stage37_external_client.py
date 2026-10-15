@@ -191,7 +191,7 @@ def main():
     (output / "signed_verdict.json").write_text(
         json.dumps(
             {
-                "stage": 35,
+                "stage": 37,
                 "seed": args.seed,
                 "verdict": verdict,
                 "signature_base64": verifier_signature,
@@ -210,11 +210,11 @@ def main():
     )
 
     print(
-        "STAGE35_RUN_OK "
+        "STAGE37_RUN_OK "
         f"seed={args.seed} relational_alert_rows="
         f"{verdict['relational_alert_rows']} "
         f"legacy_alert_rows={verdict['legacy_count_status_alert_rows']} "
-        f"verifier_ms={evidence['authenticated_verifier_latency_ms']:.2f}",
+        f"verifier_ms={evidence['verifier_latency_ms']:.2f}",
         flush=True,
     )
 
