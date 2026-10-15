@@ -1,0 +1,257 @@
+name: Stage37 final randomized topology validation
+
+on:
+  push:
+    branches: ['stage37/randomized-topology']
+    paths:
+      - '.github/workflows/stage37-final-randomized.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage37-final-randomized
+  cancel-in-progress: false
+
+jobs:
+  static-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install cryptography h2
+      - name: Compile frozen Stage37 implementation
+        run: |
+          python -m compileall -q stage37 research/stage37_*.py
+
+  policy-build:
+    needs: static-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build deterministic policy
+        run: python -m research.stage37_policy --output stage37_policy
+      - name: Record frozen implementation hashes
+        run: |
+          mkdir -p stage37_freeze
+          {
+            echo "stage37_workflow_commit=$GITHUB_SHA"
+            echo "render_implementation_commit=e9dc2d11099dc9ae6d8dcb121be96b83a836e575"
+            sha256sum               live/stage37-nnrf-handler.c               stage37/external_testbed/collector_service.py               stage37/transition_verifier_service.py               stage37/state_anchor_service.py               research/stage37_policy.py               research/stage37_external_client.py               research/stage37_report.py
+          } > stage37_freeze/FROZEN_MANIFEST.txt
+          cp stage37_policy/policy.sha256 stage37_freeze/policy.sha256
+          cat stage37_freeze/FROZEN_MANIFEST.txt
+          cat stage37_freeze/policy.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-policy
+          path: stage37_policy/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-frozen-manifest
+          path: stage37_freeze/
+          retention-days: 90
+
+  heldout-live:
+    needs: policy-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      STAGE37_COLLECTOR_ENDPOINT: https://stage37-randomized-collector.onrender.com
+      STAGE37_VERIFIER_A_ENDPOINT: https://stage37-randomized-verifier-a.onrender.com
+      STAGE37_VERIFIER_B_ENDPOINT: https://stage37-randomized-verifier-b.onrender.com
+      STAGE37_ANCHOR_ENDPOINT: https://stage37-randomized-anchor.onrender.com
+      STAGE37_POLICY_SHA256: f6190f91733160795e7bec76b2147b13fc3b86174688f57850ee9a54655009d9
+      STAGE37_COLLECTOR_KEY_SHA256: db868f9359b371e8d58f04659c8870720ddf94e0a60d3f4fd2819466589b58f4
+      STAGE37_VERIFIER_KEY_SHA256: 8e3b82e5209ce8abc8c7b1161d8423f2384b86cf0c67900b4d291682e3c8bd11
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signature dependencies
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage37-policy
+          path: stage37_policy
+      - name: Enforce frozen policy
+        run: |
+          ACTUAL="$(tr -d '\n' < stage37_policy/policy.sha256)"
+          test "$ACTUAL" = "$STAGE37_POLICY_SHA256"
+      - name: Warm and verify Stage37 services
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            name="$1"; url="$2"
+            for attempt in $(seq 1 120); do
+              echo "readiness $name attempt=$attempt"
+              if curl -fsS --connect-timeout 10 --max-time 30 "$url" > "/tmp/$name.json"; then
+                cat "/tmp/$name.json"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          wait_ready anchor "$STAGE37_ANCHOR_ENDPOINT/health"
+          wait_ready verifier_a "$STAGE37_VERIFIER_A_ENDPOINT/health"
+          wait_ready verifier_b "$STAGE37_VERIFIER_B_ENDPOINT/health"
+          wait_ready collector "$STAGE37_COLLECTOR_ENDPOINT/health"
+          python - <<'PY'
+          import json, os, urllib.request
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.loads(r.read())
+          c=get(os.environ["STAGE37_COLLECTOR_ENDPOINT"]+"/public-key")
+          v=get(os.environ["STAGE37_VERIFIER_A_ENDPOINT"]+"/public-key")
+          assert c["public_key_sha256"] == os.environ["STAGE37_COLLECTOR_KEY_SHA256"], c
+          assert v["public_key_sha256"] == os.environ["STAGE37_VERIFIER_KEY_SHA256"], v
+          assert get(os.environ["STAGE37_COLLECTOR_ENDPOINT"]+"/health")["scenario_generator"] == "randomized-topology-v1"
+          print("STAGE37_FINAL_READINESS_OK")
+          PY
+      - name: Run 512 fresh randomized scenarios
+        run: |
+          set -euo pipefail
+          mkdir -p stage37_evidence stage37_labels stage37_meta
+          printf "seed\tattempt\tstatus\tstarted_at\tended_at\n" > stage37_meta/attempts.tsv
+
+          for seed in $(seq 17001 17512); do
+            echo "=== Stage37 seed $seed ==="
+            ok=0
+            for attempt in 1 2 3; do
+              started="$(date -u +%FT%TZ)"
+              rm -rf "stage37_evidence/$seed" "stage37_labels/$seed"
+              if python -m research.stage37_external_client                 --seed "$seed"                 --collector-endpoint "$STAGE37_COLLECTOR_ENDPOINT"                 --verifier-a-endpoint "$STAGE37_VERIFIER_A_ENDPOINT"                 --policy-sha256-file stage37_policy/policy.sha256                 --expected-collector-key-sha256 "$STAGE37_COLLECTOR_KEY_SHA256"                 --expected-verifier-key-sha256 "$STAGE37_VERIFIER_KEY_SHA256"                 --output "stage37_evidence/$seed"                 --labels-output "stage37_labels/$seed"; then
+                ended="$(date -u +%FT%TZ)"
+                printf "%s\t%s\tsuccess\t%s\t%s\n" "$seed" "$attempt" "$started" "$ended" >> stage37_meta/attempts.tsv
+                ok=1
+                break
+              else
+                ended="$(date -u +%FT%TZ)"
+                printf "%s\t%s\tfailure\t%s\t%s\n" "$seed" "$attempt" "$started" "$ended" >> stage37_meta/attempts.tsv
+                sleep 4
+              fi
+            done
+            test "$ok" = 1
+          done
+
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          rows=list(csv.DictReader(open("stage37_meta/attempts.tsv"), delimiter="\t"))
+          seeds={}
+          for row in rows:
+              seeds.setdefault(row["seed"], []).append(row)
+          total=len(seeds)
+          summary={
+              "runs_requested":512,
+              "runs_completed":total,
+              "first_attempt_successes":sum(1 for rs in seeds.values() if rs[0]["status"]=="success"),
+              "seeds_retried":sum(1 for rs in seeds.values() if len(rs)>1),
+              "failed_attempts":sum(1 for row in rows if row["status"]=="failure"),
+              "total_attempts":len(rows),
+          }
+          summary["first_attempt_success_rate"]=summary["first_attempt_successes"]/total if total else 0
+          Path("stage37_meta/attempt_summary.json").write_text(json.dumps(summary, indent=2)+"\n")
+          print(json.dumps(summary, indent=2))
+          assert total == 512
+          PY
+      - name: Prove complete blind evidence set
+        run: |
+          test "$(find stage37_evidence -name evidence.json | wc -l)" -eq 512
+          test "$(find stage37_evidence -name signed_verdict.json | wc -l)" -eq 512
+          test "$(find stage37_labels -name private_labels.json | wc -l)" -eq 512
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-external-evidence
+          path: stage37_evidence/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-private-labels
+          path: stage37_labels/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-attempt-metadata
+          path: stage37_meta/
+          retention-days: 90
+
+  audit:
+    needs: heldout-live
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage37-external-evidence
+          path: stage37_batches/evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage37-private-labels
+          path: stage37_batches/labels
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage37-attempt-metadata
+          path: stage37_batches/meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage37-frozen-manifest
+          path: stage37_batches/freeze
+      - name: Join private labels only after signed decisions
+        run: |
+          python -m research.stage37_report             --input stage37_batches             --output stage37_report             --seed-start 17001             --seed-end 17512
+      - name: Enforce randomized coverage
+        run: |
+          python - <<'PY'
+          import json
+          s=json.load(open("stage37_report/summary.json"))
+          assert s["runs"] == 512
+          assert s["unique_private_plan_hashes"] == 512
+          assert s["topology_template_run_counts"] == {"0":128,"1":128,"2":128,"3":128} or s["topology_template_run_counts"] == {0:128,1:128,2:128,3:128}
+          assert set(s["by_family"]) == {"identity_replacement","endpoint_substitution","service_injection","fqdn_substitution"}
+          assert set(s["by_density"]) == {"low","medium","high"}
+          assert set(s["by_target_slot"]) == {"nssf1","nssf2"}
+          assert set(s["by_variant"]) == {"1","2","3","4"}
+          print(json.dumps(s, indent=2))
+          PY
+      - name: Append provenance
+        run: |
+          {
+            echo
+            echo "## Stage37 provenance"
+            echo
+            echo "- Final fresh seeds: 17001..17512 (512 runs)"
+            echo "- Smoke/development seeds 16991..16994 are excluded."
+            echo "- Four topology/order templates are balanced at 128 runs each."
+            echo "- Attack timing, density, family and mutation variant are generated privately per successful run."
+            echo "- Detector/verifier code was frozen before the final seed range was executed."
+            echo
+            echo "### Attempt statistics"
+            echo '~~~json'
+            cat stage37_batches/meta/attempt_summary.json
+            echo '~~~'
+            echo
+            echo "### Frozen implementation"
+            echo '~~~text'
+            cat stage37_batches/freeze/FROZEN_MANIFEST.txt
+            echo '~~~'
+          } >> stage37_report/REPORT.md
+          cat stage37_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage37-final-randomized-report
+          path: stage37_report/
+          retention-days: 90
