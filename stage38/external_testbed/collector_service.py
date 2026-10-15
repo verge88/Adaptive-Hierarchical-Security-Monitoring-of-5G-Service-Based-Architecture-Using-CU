@@ -38,6 +38,7 @@ MAX_BODY = 128_000
 CLEAN_SOAK_TICKS = 30
 
 NF_TYPES = ("NSSF", "AUSF", "BSF", "UDM")
+REQUESTER_BY_TYPE = {"NSSF": "AMF", "AUSF": "AMF", "BSF": "PCF", "UDM": "AMF"}
 SLOTS = {
     "nssf1": {"type": "NSSF", "endpoint": "127.0.0.12", "config": "nssf1.yaml", "code": 1},
     "nssf2": {"type": "NSSF", "endpoint": "127.0.0.13", "config": "nssf2.yaml", "code": 2},
@@ -230,9 +231,10 @@ async def h2_exchange(base: str, path: str, *, target: str | None = None, timeou
 
 
 async def discover_type(nf_type: str) -> tuple[dict, bytes]:
+    requester = REQUESTER_BY_TYPE[nf_type]
     path = (
         "/nnrf-disc/v1/nf-instances"
-        f"?target-nf-type={nf_type}&requester-nf-type=AMF"
+        f"?target-nf-type={nf_type}&requester-nf-type={requester}"
     )
     status, body = await h2_exchange(SCP_URL, path, target=NRF_TARGET)
     if status != 200:
