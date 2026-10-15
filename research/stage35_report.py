@@ -435,19 +435,27 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--output", default="stage35_report")
+    parser.add_argument("--expected-seed-start", type=int, default=13001)
+    parser.add_argument("--expected-seed-end", type=int, default=13016)
     args = parser.parse_args()
 
     root = Path(args.input)
     labels = load_by_seed(root, "private_labels.json")
     signed = load_by_seed(root, "signed_verdict.json")
     evidence = load_by_seed(root, "evidence.json")
-    expected = set(EXPECTED_SEEDS)
+    if args.expected_seed_end < args.expected_seed_start:
+        raise ValueError("expected seed range is empty")
+    expected_seeds = tuple(range(args.expected_seed_start, args.expected_seed_end + 1))
+    expected = set(expected_seeds)
     if any(set(group) != expected for group in (labels, signed, evidence)):
-        raise AssertionError("Stage35 requires all 16 preregistered runs")
+        raise AssertionError(
+            f"report requires complete seed range "
+            f"{args.expected_seed_start}..{args.expected_seed_end}"
+        )
 
     rows = [
         score(labels[seed], signed[seed], evidence[seed])
-        for seed in EXPECTED_SEEDS
+        for seed in expected_seeds
     ]
     benchmark = json.loads(Path(args.benchmark).read_text(encoding="utf8"))
     summary = summarize(rows, benchmark)
