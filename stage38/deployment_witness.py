@@ -30,8 +30,8 @@ SLOTS = {
     "ausf2": {"type": "AUSF", "endpoint": "127.0.0.15", "config": "ausf2.yaml"},
     "bsf1": {"type": "BSF", "endpoint": "127.0.0.16", "config": "bsf1.yaml"},
     "bsf2": {"type": "BSF", "endpoint": "127.0.0.17", "config": "bsf2.yaml"},
-    "amf1": {"type": "AMF", "endpoint": "127.0.0.18", "config": "amf1.yaml"},
-    "amf2": {"type": "AMF", "endpoint": "127.0.0.19", "config": "amf2.yaml"},
+    "udm1": {"type": "UDM", "endpoint": "127.0.0.18", "config": "udm1.yaml"},
+    "udm2": {"type": "UDM", "endpoint": "127.0.0.19", "config": "udm2.yaml"},
 }
 CONFIG_TO_SLOT = {v["config"]: k for k, v in SLOTS.items()}
 
