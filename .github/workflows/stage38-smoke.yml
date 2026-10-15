@@ -1,0 +1,104 @@
+name: Stage38 multi-NF witness smoke
+
+on:
+  push:
+    branches: ['stage38/multi-nf-witness']
+    paths:
+      - '.github/workflows/stage38-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage38-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      STAGE38_COLLECTOR_ENDPOINT: https://stage38-multi-nf-collector.onrender.com
+      STAGE38_VERIFIER_A_ENDPOINT: https://stage38-multi-nf-verifier-a.onrender.com
+      STAGE38_VERIFIER_B_ENDPOINT: https://stage38-multi-nf-verifier-b.onrender.com
+      STAGE38_ANCHOR_ENDPOINT: https://stage38-multi-nf-anchor.onrender.com
+      STAGE38_POLICY_SHA256: 1c7da33bbe05ec845455f38e85329a54e0826de3fe529ea5db5fafe6be4d0542
+      STAGE38_COLLECTOR_KEY_SHA256: f16db65f4b4bef781e7723903e9a00c19d0c5770bb58e15a6937f3e0fce14ffa
+      STAGE38_WITNESS_KEY_SHA256: b7f1a1a372e4f81c91feeb028b6e96691d0d6be3970666149f727b151574881f
+      STAGE38_VERIFIER_KEY_SHA256: 061fe394c428600d7807d53d54abcae847032f0cffc0dd2b5a2de202ff317479
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install cryptography
+      - name: Compile Stage38 Python
+        run: python -m compileall -q stage38 research/stage38_*.py
+      - name: Build and verify frozen policy
+        run: |
+          python -m research.stage38_policy --output stage38_policy
+          ACTUAL="$(tr -d '\n' < stage38_policy/policy.sha256)"
+          test "$ACTUAL" = "$STAGE38_POLICY_SHA256"
+      - name: Warm and verify Stage38 services
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            name="$1"; url="$2"
+            for attempt in $(seq 1 240); do
+              echo "readiness $name attempt=$attempt"
+              if curl -fsS --connect-timeout 10 --max-time 30 "$url" > "/tmp/$name.json"; then
+                cat "/tmp/$name.json"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          wait_ready anchor "$STAGE38_ANCHOR_ENDPOINT/health"
+          wait_ready verifier_a "$STAGE38_VERIFIER_A_ENDPOINT/health"
+          wait_ready verifier_b "$STAGE38_VERIFIER_B_ENDPOINT/health"
+          wait_ready collector "$STAGE38_COLLECTOR_ENDPOINT/health"
+          python - <<'PY'
+          import json, os, urllib.request
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.loads(r.read())
+          c=get(os.environ["STAGE38_COLLECTOR_ENDPOINT"]+"/health")
+          ck=get(os.environ["STAGE38_COLLECTOR_ENDPOINT"]+"/public-key")
+          wk=get(os.environ["STAGE38_COLLECTOR_ENDPOINT"]+"/witness-public-key")
+          vk=get(os.environ["STAGE38_VERIFIER_A_ENDPOINT"]+"/public-key")
+          assert c["nf_types"] == ["NSSF","AUSF","BSF","UDM"], c
+          assert c["nf_instance_slots"] == 8, c
+          assert c["witness_uses_nrf_discovery"] is False, c
+          assert ck["public_key_sha256"] == os.environ["STAGE38_COLLECTOR_KEY_SHA256"], ck
+          assert wk["public_key_sha256"] == os.environ["STAGE38_WITNESS_KEY_SHA256"], wk
+          assert vk["public_key_sha256"] == os.environ["STAGE38_VERIFIER_KEY_SHA256"], vk
+          print("STAGE38_READINESS_OK")
+          PY
+      - name: Run eight non-final multi-NF smoke seeds
+        run: |
+          set -euo pipefail
+          mkdir -p stage38_smoke/evidence stage38_smoke/labels
+          for seed in $(seq 17991 17998); do
+            ok=0
+            for attempt in 1 2; do
+              rm -rf "stage38_smoke/evidence/$seed" "stage38_smoke/labels/$seed"
+              if python -m research.stage38_external_client                 --seed "$seed"                 --collector-endpoint "$STAGE38_COLLECTOR_ENDPOINT"                 --verifier-a-endpoint "$STAGE38_VERIFIER_A_ENDPOINT"                 --policy-sha256-file stage38_policy/policy.sha256                 --expected-collector-key-sha256 "$STAGE38_COLLECTOR_KEY_SHA256"                 --expected-verifier-key-sha256 "$STAGE38_VERIFIER_KEY_SHA256"                 --expected-witness-key-sha256 "$STAGE38_WITNESS_KEY_SHA256"                 --output "stage38_smoke/evidence/$seed"                 --labels-output "stage38_smoke/labels/$seed"; then
+                ok=1
+                break
+              fi
+              sleep 4
+            done
+            test "$ok" = 1
+          done
+      - name: Audit smoke
+        run: |
+          python -m research.stage38_report             --input stage38_smoke             --output stage38_smoke/report             --seed-start 17991             --seed-end 17998
+          cat stage38_smoke/report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-multi-nf-smoke
+          path: stage38_smoke/
+          retention-days: 30
