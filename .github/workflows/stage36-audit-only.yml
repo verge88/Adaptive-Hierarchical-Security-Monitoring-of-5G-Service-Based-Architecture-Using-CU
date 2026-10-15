@@ -1,0 +1,127 @@
+name: Stage36 audit-only final report
+
+on:
+  push:
+    branches: ['stage36/audit-only']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download Stage36 evidence from completed run
+        uses: actions/download-artifact@v4
+        with:
+          name: stage36-external-evidence
+          path: stage36_batches/evidence
+          repository: verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+          run-id: 38720990950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Stage36 private labels
+        uses: actions/download-artifact@v4
+        with:
+          name: stage36-private-labels
+          path: stage36_batches/labels
+          repository: verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+          run-id: 38720990950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Stage36 benchmark
+        uses: actions/download-artifact@v4
+        with:
+          name: stage36-benchmark
+          path: stage36_batches/benchmark
+          repository: verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+          run-id: 38720990950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Stage36 attempt metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: stage36-attempt-metadata
+          path: stage36_batches/meta
+          repository: verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+          run-id: 38720990950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Stage36 frozen manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: stage36-frozen-manifest
+          path: stage36_batches/freeze
+          repository: verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU
+          run-id: 38720990950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify complete preserved evidence set
+        run: |
+          set -euo pipefail
+          test "$(find stage36_batches/evidence -name evidence.json | wc -l)" -eq 768
+          test "$(find stage36_batches/evidence -name signed_verdict.json | wc -l)" -eq 768
+          test "$(find stage36_batches/labels -name private_labels.json | wc -l)" -eq 768
+          test -f stage36_batches/benchmark/stage36_benchmark.json
+          test -f stage36_batches/meta/attempt_summary.json
+          test -f stage36_batches/freeze/FROZEN_MANIFEST.txt
+
+      - name: Generate Stage36 final report from preserved artifacts
+        run: |
+          python -m research.stage35_report \
+            --input stage36_batches \
+            --benchmark stage36_batches/benchmark/stage36_benchmark.json \
+            --output stage36_report \
+            --expected-seed-start 15001 \
+            --expected-seed-end 15768
+
+          sed -i '1s/^# Stage 35/# Stage 36/' stage36_report/REPORT.md
+
+      - name: Append Stage36 provenance and retry statistics
+        run: |
+          {
+            echo
+            echo "## Stage36 audit-only provenance"
+            echo
+            echo "- Source experimental run: 38720990950"
+            echo "- Fresh runs: 768 (seeds 15001..15768)"
+            echo "- Evidence, labels, attempt metadata, benchmark and frozen manifest were reused exactly from the completed source run."
+            echo "- No detector, collector, verifier or freshness-anchor logic was rerun or modified for this reporting pass."
+            echo "- This audit-only commit changes report seed-range handling only."
+            echo
+            echo "### Attempt statistics"
+            echo
+            echo '~~~json'
+            cat stage36_batches/meta/attempt_summary.json
+            echo '~~~'
+            echo
+            echo "### Frozen source manifest"
+            echo
+            echo '~~~text'
+            cat stage36_batches/freeze/FROZEN_MANIFEST.txt
+            echo '~~~'
+            echo
+            echo "### Preserved source artifact identities"
+            echo
+            echo "- stage36-external-evidence: ID 11973762968, SHA-256 499fb3377ef86f398b9de51d2354c721ee5f2d1f81777bb4ed8f1a136809722d"
+            echo "- stage36-private-labels: ID 11973518398, SHA-256 403e80fb47e36028d95e780f36a1d941364d070c791f4e5ed54eff99f771a7cb"
+            echo "- stage36-attempt-metadata: ID 11973668451, SHA-256 702f97be320b001bb4b5a289efe68e293ced08378ebbe28156864d794dbe4a93"
+            echo "- stage36-benchmark: ID 11973858435, SHA-256 45df7c488a8c67d0e5275ae81fffd390940f079a23f1635f5f3527296f69b700"
+            echo "- stage36-frozen-manifest: ID 11966010864, SHA-256 1699588f290283c3e9d0a3f56711d4b0aec283dc376b6c55557be3006ae2a213"
+          } >> stage36_report/REPORT.md
+
+      - name: Publish Stage36 report
+        run: cat stage36_report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage36-final-validation-report
+          path: stage36_report/
+          retention-days: 90
