@@ -1,0 +1,13 @@
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/ausf2.log
+global:
+ausf:
+  sbi:
+    server:
+      - address: 127.0.0.15
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80
