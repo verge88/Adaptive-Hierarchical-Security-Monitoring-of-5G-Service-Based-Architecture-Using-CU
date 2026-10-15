@@ -1,10 +1,6 @@
 name: Stage38 multi-NF witness smoke
 
 on:
-  push:
-    branches: ['stage38/multi-nf-witness']
-    paths:
-      - '.github/workflows/stage38-smoke.yml'
   workflow_dispatch:
 
 permissions:
