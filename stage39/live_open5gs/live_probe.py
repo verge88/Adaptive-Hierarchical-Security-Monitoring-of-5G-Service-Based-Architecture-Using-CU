@@ -714,6 +714,19 @@ async def clean_discovery_snapshot(expected=None):
 async def run_native_mutations(clean,witness,policy,external_control=None):
     write_mutation_plan()
     cases=mutation_cases()
+    if external_control is not None:
+        control_dir=Path(external_control)
+        control_dir.mkdir(parents=True,exist_ok=True)
+        (control_dir/"command.json").unlink(missing_ok=True)
+        (control_dir/"ack.json").unlink(missing_ok=True)
+        atomic_json_write(
+            control_dir/"ready.json",
+            {
+                "schema":"stage39-live-mutation-ready-v1",
+                "cases":len(EXPECTED_DISCOVERY)*len(cases),
+                "types":list(EXPECTED_DISCOVERY),
+            },
+        )
     matrix={}
     request_latencies=[]
     mutation_latencies=[]
@@ -824,6 +837,10 @@ async def run_native_mutations(clean,witness,policy,external_control=None):
                 mutation_latencies.append(mutation_to_detection)
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
+        if external_control is not None:
+            (Path(external_control)/"ready.json").unlink(
+                missing_ok=True
+            )
 
     restored=await clean_discovery_snapshot()
     restored_equal={
