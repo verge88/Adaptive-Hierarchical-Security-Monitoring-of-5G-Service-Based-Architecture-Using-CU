@@ -208,17 +208,30 @@ def verify_live_policy_signature(public_key_path,signature_path):
     if not isinstance(public_key,ec.EllipticCurvePublicKey):
         raise RuntimeError("live policy signing key must be EC")
     signature=Path(signature_path).read_bytes()
+    policy_bytes=LIVE_POLICY_PATH.read_bytes()
     try:
         public_key.verify(
             signature,
-            LIVE_POLICY_PATH.read_bytes(),
+            policy_bytes,
             ec.ECDSA(hashes.SHA256()),
         )
     except Exception as exc:
         raise RuntimeError("independent live policy signature invalid") from exc
+    tamper_rejected=False
+    try:
+        public_key.verify(
+            signature,
+            policy_bytes+b"\n ",
+            ec.ECDSA(hashes.SHA256()),
+        )
+    except Exception:
+        tamper_rejected=True
+    if not tamper_rejected:
+        raise RuntimeError("tampered independent policy signature accepted")
     public_pem=Path(public_key_path).read_bytes()
     return {
         "verified":True,
+        "tampered_policy_rejected":True,
         "public_key_sha256":hashlib.sha256(public_pem).hexdigest(),
         "policy_file_sha256":
             hashlib.sha256(LIVE_POLICY_PATH.read_bytes()).hexdigest(),
