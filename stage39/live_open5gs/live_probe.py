@@ -50,11 +50,10 @@ PROCESSES={
     "pcf1":("/src/open5gs/build/src/pcf/open5gs-pcfd","pcf1.yaml","PCF","127.0.0.22"),
 }
 
-BASE_EXPECTED_DISCOVERY={
+EXPECTED_DISCOVERY={
     "NSSF":2,"AUSF":2,"BSF":2,"UDM":2,
-    "AMF":1,"SMF":1,"PCF":1,"SCP":1,
+    "AMF":1,"SMF":1,"PCF":1,"SCP":1,"NRF":1,
 }
-EXPECTED_DISCOVERY={**BASE_EXPECTED_DISCOVERY,"NRF":1}
 REQUESTER={
     "NSSF":"AMF","AUSF":"AMF","BSF":"PCF","UDM":"AMF",
     "AMF":"SMF","SMF":"AMF","PCF":"SMF","SCP":"AMF","NRF":"AMF",
@@ -179,60 +178,6 @@ async def discover_document(nf_type):
 
 async def discover(nf_type):
     return (await discover_document(nf_type))["nfInstances"]
-
-
-HARNESS_NRF_UUID="39000000-0000-4000-8000-000000000039"
-
-
-def harness_nrf_profile(template):
-    keep=("heartBeatTimer","plmnList")
-    profile={
-        key:copy.deepcopy(template[key])
-        for key in keep if key in template
-    }
-    profile.update({
-        "nfInstanceId":HARNESS_NRF_UUID,
-        "nfType":"NRF",
-        "nfStatus":"REGISTERED",
-        "ipv4Addresses":["127.0.0.10"],
-        "nfServices":[],
-    })
-    return profile
-
-
-async def register_harness_nrf_profile(base_clean):
-    source=row_with_endpoint(
-        base_clean["NSSF"],PROCESSES["nssf1"][3]
-    )
-    profile=harness_nrf_profile(source)
-    path=f"/nnrf-nfm/v1/nf-instances/{HARNESS_NRF_UUID}"
-    status,body=await h2_request(
-        "PUT",NRF_HOST,NRF_PORT,path,body=profile,timeout=8
-    )
-    if status not in {200,201}:
-        raise RuntimeError(
-            f"harness NRF profile registration failed "
-            f"status={status} body={body[:1000]!r}"
-        )
-    return {
-        "nf_instance_id":HARNESS_NRF_UUID,
-        "registration_status":status,
-        "profile":profile,
-    }
-
-
-async def remove_harness_nrf_profile():
-    path=f"/nnrf-nfm/v1/nf-instances/{HARNESS_NRF_UUID}"
-    status,body=await h2_request(
-        "DELETE",NRF_HOST,NRF_PORT,path,timeout=8
-    )
-    if status not in {200,204,404}:
-        raise RuntimeError(
-            f"harness NRF profile cleanup failed "
-            f"status={status} body={body[:1000]!r}"
-        )
-    return status
-
 
 
 def load_live_policy():
@@ -810,28 +755,9 @@ async def main_async(
                     f"{slot} endpoint failed: {exc}; log={log_tail(slot)}"
                 )
 
-        base_clean={}
+        clean={}
         deadline=time.time()+30
         last={}
-        while time.time()<deadline:
-            try:
-                base_clean=await clean_discovery_snapshot(
-                    BASE_EXPECTED_DISCOVERY
-                )
-                break
-            except Exception as exc:
-                last={"error":f"{type(exc).__name__}: {exc}"}
-                base_clean={}
-            await asyncio.sleep(0.2)
-        if not base_clean:
-            tails={slot:log_tail(slot) for slot in PROCESSES}
-            raise RuntimeError(
-                f"NRF base convergence failed: {last}; logs={tails}"
-            )
-
-        harness_nrf=await register_harness_nrf_profile(base_clean)
-        clean={}
-        deadline=time.time()+15
         while time.time()<deadline:
             try:
                 clean=await clean_discovery_snapshot()
@@ -839,10 +765,11 @@ async def main_async(
             except Exception as exc:
                 last={"error":f"{type(exc).__name__}: {exc}"}
                 clean={}
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
         if not clean:
+            tails={slot:log_tail(slot) for slot in PROCESSES}
             raise RuntimeError(
-                f"harness NRF discovery did not converge: {last}"
+                f"NRF convergence failed: {last}; logs={tails}"
             )
 
         external_witness_evidence=None
@@ -924,7 +851,6 @@ async def main_async(
                 ).hexdigest(),
                 "clean_policy_alerts":clean_policy_alerts,
             },
-            "harness_registered_nrf_profile":harness_nrf,
             "persistent_registration_poisoning":persistent_poison,
             "native_mutations":native_mutations,
         }
@@ -1005,12 +931,6 @@ async def main_async(
                 "sha256":policy_digest,
                 "clean_policy_alerts":clean_policy_alerts,
             },
-            "harness_registered_nrf_profile":{
-                "nf_instance_id":harness_nrf["nf_instance_id"],
-                "registration_status":harness_nrf["registration_status"],
-                "purpose":
-                    "test-harness self-description for the live NRF endpoint",
-            },
             "persistent_registration_poisoning":persistent_poison,
             "native_mutations":{
                 "cases":native_mutations["cases"],
@@ -1031,9 +951,9 @@ async def main_async(
                 "still share one GitHub runner/kernel.",
                 "Persistent poisoning test uses an intentionally registered "
                 "test profile and removes it after validation.",
-                "NRF mutation coverage uses a harness-registered NRF profile "
-                "that describes the live NRF endpoint; Open5GS NRF does not "
-                "self-register through its own discovery path in this testbed.",
+                "NRF is included through its live self-profile returned by "
+                "NRF discovery and is mutated by the same native response hook "
+                "used for the other discoverable NF types.",
                 "Mutation-to-detection timing begins at instrumentation inside "
                 "the NRF response-mutation path; it is not an external "
                 "attacker-onset timestamp.",
@@ -1086,11 +1006,6 @@ async def main_async(
         print(json.dumps(report,indent=2,ensure_ascii=False))
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
-        if processes.get("nrf1") and processes["nrf1"].poll() is None:
-            try:
-                await remove_harness_nrf_profile()
-            except Exception:
-                pass
         stop_all(processes)
 
 
