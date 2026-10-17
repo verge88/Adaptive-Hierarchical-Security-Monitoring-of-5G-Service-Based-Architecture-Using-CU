@@ -39,8 +39,8 @@ PROCESSES={
     "smf1":("/src/open5gs/build/src/smf/open5gs-smfd","smf1.yaml","SMF","127.0.0.21"),
     "pcf1":("/src/open5gs/build/src/pcf/open5gs-pcfd","pcf1.yaml","PCF","127.0.0.22"),
 }
-EXPECTED={"NSSF":2,"AUSF":2,"BSF":2,"UDM":2,"AMF":1,"SMF":1,"PCF":1,"SCP":1}
-REQUESTER={"NSSF":"AMF","AUSF":"AMF","BSF":"PCF","UDM":"AMF","AMF":"SMF","SMF":"AMF","PCF":"SMF","SCP":"AMF"}
+EXPECTED={"NSSF":2,"AUSF":2,"BSF":2,"UDM":2,"AMF":1,"SMF":1,"PCF":1,"SCP":1,"NRF":1}
+REQUESTER={"NSSF":"AMF","AUSF":"AMF","BSF":"PCF","UDM":"AMF","AMF":"SMF","SMF":"AMF","PCF":"SMF","SCP":"AMF","NRF":"AMF"}
 
 
 def run(cmd,cwd=None):
