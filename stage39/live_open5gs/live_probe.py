@@ -214,7 +214,7 @@ def profile_service_names(row):
     )
 
 
-def live_policy_alerts(nf_type,rows,witness,policy):
+def live_policy_alerts(nf_type,rows,witness,policy,include_witness=True):
     expected_slots={
         slot:item
         for slot,item in policy["slots"].items()
@@ -257,27 +257,78 @@ def live_policy_alerts(nf_type,rows,witness,policy):
         if expected_services is not None:
             if profile_service_names(row)!=sorted(expected_services):
                 alerts.append(f"services:{slot}")
-        w=witness.get(slot)
-        if not isinstance(w,dict):
-            alerts.append(f"witness_missing:{slot}")
-        else:
-            if str(row.get("nfInstanceId","")).lower()!=str(
-                w.get("nf_instance_id","")
-            ).lower():
-                alerts.append(f"witness_uuid:{slot}")
-            if w.get("nf_type")!=expected["nf_type"]:
-                alerts.append(f"witness_type:{slot}")
-            if w.get("endpoint")!=expected["endpoint"]:
-                alerts.append(f"witness_endpoint:{slot}")
-            if w.get("process_alive") is not True:
-                alerts.append(f"witness_process:{slot}")
-            if w.get("tcp_reachable") is not True:
-                alerts.append(f"witness_reachability:{slot}")
+        if include_witness:
+            w=witness.get(slot)
+            if not isinstance(w,dict):
+                alerts.append(f"witness_missing:{slot}")
+            else:
+                if str(row.get("nfInstanceId","")).lower()!=str(
+                    w.get("nf_instance_id","")
+                ).lower():
+                    alerts.append(f"witness_uuid:{slot}")
+                if w.get("nf_type")!=expected["nf_type"]:
+                    alerts.append(f"witness_type:{slot}")
+                if w.get("endpoint")!=expected["endpoint"]:
+                    alerts.append(f"witness_endpoint:{slot}")
+                if w.get("process_alive") is not True:
+                    alerts.append(f"witness_process:{slot}")
+                if w.get("tcp_reachable") is not True:
+                    alerts.append(f"witness_reachability:{slot}")
     for slot,count in assigned_counts.items():
         if count>1:
             alerts.append(f"ambiguous_slot:{slot}")
     missing=sorted(set(expected_slots)-assigned)
     alerts.extend(f"missing_slot:{slot}" for slot in missing)
+    return sorted(set(alerts))
+
+
+
+def live_witness_only_alerts(nf_type,rows,witness):
+    expected={
+        slot:row for slot,row in witness.items()
+        if row.get("nf_type")==nf_type
+    }
+    alerts=[]
+    ids=[
+        str(row.get("nfInstanceId","")).lower()
+        for row in rows if isinstance(row,dict)
+    ]
+    if len(ids)!=len(set(ids)):
+        alerts.append(f"witness_duplicate_nfInstanceId:{nf_type}")
+    assigned=set()
+    counts={}
+    for row in rows:
+        addresses=row.get("ipv4Addresses")
+        addresses=addresses if isinstance(addresses,list) else []
+        candidates=[
+            slot for slot,w in expected.items()
+            if w.get("endpoint") in addresses
+        ]
+        if len(candidates)!=1:
+            alerts.append(
+                f"witness_unassigned_or_ambiguous_endpoint:{nf_type}:"
+                f"{','.join(str(x) for x in addresses)}"
+            )
+            continue
+        slot=candidates[0]
+        assigned.add(slot)
+        counts[slot]=counts.get(slot,0)+1
+        w=expected[slot]
+        if str(row.get("nfInstanceId","")).lower()!=str(
+            w.get("nf_instance_id","")
+        ).lower():
+            alerts.append(f"witness_uuid:{slot}")
+        if row.get("nfType")!=w.get("nf_type"):
+            alerts.append(f"witness_type:{slot}")
+        if w.get("process_alive") is not True:
+            alerts.append(f"witness_process:{slot}")
+        if w.get("tcp_reachable") is not True:
+            alerts.append(f"witness_reachability:{slot}")
+    for slot,count in counts.items():
+        if count>1:
+            alerts.append(f"witness_ambiguous_slot:{slot}")
+    for slot in sorted(set(expected)-assigned):
+        alerts.append(f"witness_missing_slot:{slot}")
     return sorted(set(alerts))
 
 
