@@ -9,6 +9,7 @@ on:
       - 'stage4_tests/**'
       - 'live/**'
       - '!research/stage39_*.py'
+      - '!research/test_stage39_*.py'
   workflow_dispatch:
 
 permissions:
