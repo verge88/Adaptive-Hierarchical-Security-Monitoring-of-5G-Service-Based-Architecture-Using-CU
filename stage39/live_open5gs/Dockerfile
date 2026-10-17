@@ -32,7 +32,8 @@ RUN mkdir -p /var/log/open5gs /run/stage39/witness /run/stage38 \
         src/udm/open5gs-udmd \
         src/amf/open5gs-amfd \
         src/smf/open5gs-smfd \
-        src/pcf/open5gs-pcfd
+        src/pcf/open5gs-pcfd \
+        src/sepp/open5gs-seppd
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir h2 cryptography
 
