@@ -15,7 +15,7 @@ on:
       duration_minutes:
         description: 'Benign signed lifecycle churn duration in minutes (1-360)'
         required: true
-        default: '60'
+        default: '120'
 permissions:
   contents: read
 
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 370
     env:
-      DURATION_MINUTES: ${{ github.event_name == 'pull_request' && '2' || github.event_name == 'workflow_dispatch' && inputs.duration_minutes || '60' }}
+      DURATION_MINUTES: ${{ github.event_name == 'pull_request' && '2' || github.event_name == 'workflow_dispatch' && inputs.duration_minutes || '120' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
