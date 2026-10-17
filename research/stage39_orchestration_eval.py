@@ -77,7 +77,8 @@ def signed_full_policy_alert(
     policy,pre_profiles,observed,operation,moving_slot,witnesses=None
 ):
     pre=profiles_by_slot(pre_profiles)
-    obs=profiles_by_slot(observed)
+    normalized_observed=[normalize_profile(row) for row in observed]
+    obs={row["slot"]:row for row in normalized_observed}
     alerts=[]
     for slot,row in pre.items():
         if slot==moving_slot:
@@ -105,9 +106,12 @@ def signed_full_policy_alert(
                 w.get("nf_instance_id","")
             ).lower():
                 alerts.append("witness_uuid:"+slot)
-    ids=[row["nfInstanceId"] for row in obs.values()]
+    ids=[row["nfInstanceId"] for row in normalized_observed]
     if len(ids)!=len(set(ids)):
         alerts.append("duplicate_nfInstanceId")
+    slots=[row["slot"] for row in normalized_observed]
+    if len(slots)!=len(set(slots)):
+        alerts.append("duplicate_slot")
     return sorted(set(alerts))
 
 
