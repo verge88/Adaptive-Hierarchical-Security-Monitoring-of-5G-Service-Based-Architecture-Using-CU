@@ -153,7 +153,7 @@ async def h2_request(method,host,port,path,body=None,timeout=5):
 async def h2_get(host,port,path,timeout=5):
     return await h2_request("GET",host,port,path,timeout=timeout)
 
-async def discover(nf_type):
+async def discover_document(nf_type):
     query=urlencode({
         "target-nf-type":nf_type,
         "requester-nf-type":REQUESTER[nf_type],
@@ -169,7 +169,11 @@ async def discover(nf_type):
     rows=doc.get("nfInstances")
     if not isinstance(rows,list):
         raise RuntimeError(f"discovery {nf_type} missing nfInstances")
-    return rows
+    return doc
+
+
+async def discover(nf_type):
+    return (await discover_document(nf_type))["nfInstances"]
 
 
 
@@ -427,7 +431,8 @@ async def clean_discovery_snapshot():
 async def run_native_mutations(clean,witness,policy):
     write_mutation_plan()
     matrix={}
-    latencies=[]
+    request_latencies=[]
+    mutation_latencies=[]
     try:
         for typ in EXPECTED_DISCOVERY:
             slot,_=MUTATION_TARGET_SLOT[typ]
@@ -435,7 +440,8 @@ async def run_native_mutations(clean,witness,policy):
             matrix[typ]={}
             for kind in MUTATION_KINDS:
                 started=time.perf_counter_ns()
-                rows=await discover(typ)
+                doc=await discover_document(typ)
+                rows=doc["nfInstances"]
                 changed=discovery_digest(rows)!=discovery_digest(clean[typ])
                 if not changed:
                     raise RuntimeError(
@@ -449,13 +455,28 @@ async def run_native_mutations(clean,witness,policy):
                     raise RuntimeError(
                         f"independent live policy missed {typ}/{kind}"
                     )
+                detected_ns=time.monotonic_ns()
                 elapsed=(time.perf_counter_ns()-started)/1_000_000
+                mutation_ns=doc.get("stage39MutationMonotonicNs")
+                if not isinstance(mutation_ns,(int,float)):
+                    raise RuntimeError(
+                        f"missing mutation timestamp: {typ}/{kind}"
+                    )
+                mutation_to_detection=(
+                    detected_ns-int(mutation_ns)
+                )/1_000_000
+                if mutation_to_detection < 0:
+                    raise RuntimeError(
+                        f"negative mutation latency: {typ}/{kind}"
+                    )
                 matrix[typ][kind]={
                     "detected":True,
                     "policy_alerts":policy_alerts,
                     "discovery_request_to_detection_ms":elapsed,
+                    "mutation_to_detection_ms":mutation_to_detection,
                 }
-                latencies.append(elapsed)
+                request_latencies.append(elapsed)
+                mutation_latencies.append(mutation_to_detection)
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
 
@@ -494,13 +515,22 @@ async def run_native_mutations(clean,witness,policy):
         "restored_policy_alerts":restored_policy_alerts,
         "native_marker_count":marker_count,
         "timing_ms":{
-            "measurement_scope":
-                "local NRF discovery request start through mutation validation; "
-                "not attack-onset-to-alert latency",
-            "sample_count":len(latencies),
-            "median":statistics.median(latencies),
-            "p95_nearest_rank":nearest_rank(latencies,0.95),
-            "max":max(latencies),
+            "sample_count":len(request_latencies),
+            "discovery_request_to_detection":{
+                "scope":
+                    "local discovery request start through independent-policy alert",
+                "median":statistics.median(request_latencies),
+                "p95_nearest_rank":nearest_rank(request_latencies,0.95),
+                "max":max(request_latencies),
+            },
+            "mutation_application_to_detection":{
+                "scope":
+                    "CLOCK_MONOTONIC timestamp injected by NRF immediately "
+                    "after profile mutation through independent-policy alert",
+                "median":statistics.median(mutation_latencies),
+                "p95_nearest_rank":nearest_rank(mutation_latencies,0.95),
+                "max":max(mutation_latencies),
+            },
         },
     }
 
@@ -803,8 +833,9 @@ async def main_async(output):
                 "test profile and removes it after validation.",
                 "NRF is controlled as a live process but is not mutated as a "
                 "self-discovered NRF profile.",
-                "Timing starts at the local discovery request, not at a "
-                "separately timestamped adversarial action.",
+                "Mutation-to-detection timing begins at instrumentation inside "
+                "the NRF response-mutation path; it is not an external "
+                "attacker-onset timestamp.",
                 "mTLS/OAuth2 and SEPP-like checks remain in the separate "
                 "Stage39 transport probe and are not 3GPP conformance tests.",
             ],
@@ -816,6 +847,8 @@ async def main_async(output):
             json.dumps(live_evidence,indent=2,ensure_ascii=False)+"\n"
         )
         timing=report["native_mutations"]["timing_ms"]
+        mutation_timing=timing["mutation_application_to_detection"]
+        request_timing=timing["discovery_request_to_detection"]
         (output/"live_open5gs_report.md").write_text(
             "# Stage39 live Open5GS native validation\n\n"
             f"- Live processes: {report['live_processes']}\n"
@@ -836,9 +869,13 @@ async def main_async(output):
             f"- Clean discovery restored after hook: "
             f"{all(native_mutations['clean_restored_after_hook'].values())}\n"
             f"- Discovery-request-to-detection median / p95 / max: "
-            f"{timing['median']:.3f} / "
-            f"{timing['p95_nearest_rank']:.3f} / "
-            f"{timing['max']:.3f} ms\n"
+            f"{request_timing['median']:.3f} / "
+            f"{request_timing['p95_nearest_rank']:.3f} / "
+            f"{request_timing['max']:.3f} ms\n"
+            f"- NRF-mutation-to-detection median / p95 / max: "
+            f"{mutation_timing['median']:.3f} / "
+            f"{mutation_timing['p95_nearest_rank']:.3f} / "
+            f"{mutation_timing['max']:.3f} ms\n"
             f"- KIE bound to live evidence: "
             f"{report['kie_bound_to_live_evidence']}\n"
         )
