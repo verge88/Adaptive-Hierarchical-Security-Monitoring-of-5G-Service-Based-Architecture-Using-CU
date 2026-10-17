@@ -1,0 +1,44 @@
+name: Stage38 full review reanalysis
+on:
+  push:
+    branches: ['codex/stage38-scenario-statistics']
+    paths:
+      - '.github/workflows/stage38-review-reanalysis.yml'
+      - 'research/review_reanalysis.py'
+      - 'research/test_review_reanalysis.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography
+      - name: Statistical and formal boundary tests
+        run: |
+          python -m unittest discover -s research -p test_statistical_reanalysis.py -v
+          python -m unittest discover -s research -p test_review_reanalysis.py -v
+      - name: Verify and download frozen input archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python research/download_stage38_statistics.py
+      - name: Recompute scenario statistics
+        run: python research/statistical_reanalysis.py --input stage38_input --output stage38_review
+      - name: Replay stronger baselines and validate witness boundaries
+        run: python research/review_reanalysis.py --input stage38_input --output stage38_review
+      - name: Publish review summary
+        run: |
+          cp stage38_input/provenance.json stage38_review/source_archives.json
+          cat stage38_review/REPORT_RU.md stage38_review/REVIEW_RU.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-full-review-reanalysis
+          path: stage38_review/
+          if-no-files-found: error
+          retention-days: 90
