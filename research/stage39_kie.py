@@ -465,8 +465,7 @@ def run_ci(policy,output,soak_seconds):
             "Recovery mirror covers single-anchor loss, not simultaneous destruction of all copies.",
         ],
     }
-    (output/"stage39_report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"
-",encoding="utf-8")
+    (output/"stage39_report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
     (output/"stage39_report.md").write_text(
         "# Stage39 KIE / streaming CI report\n\n"
         f"- NF types: {', '.join(report['nf_types'])}\n"
