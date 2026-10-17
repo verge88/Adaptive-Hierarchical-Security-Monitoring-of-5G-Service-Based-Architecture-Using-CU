@@ -1,3 +1,20 @@
+# 5G SBA profile integrity research
+
+This branch contains the frozen Stage38 Open5GS experiment and subsequent review corrections. Start with [Stage38 review findings](article/STAGE38_REVIEW_CORRECTIONS.md).
+
+## Current article evidence
+
+The experiment covers NSSF, AUSF, BSF and UDM, two instances each, in 256 scenarios. It uses batch relational profile verification and an NF-side witness with explicitly limited field coverage. The strongest measured benefit is reducing false positives during authorized lifecycle transitions. It does not demonstrate online attack-to-alert latency or independently trusted full-profile semantics.
+
+- [Frozen Stage38 source](https://github.com/verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU/tree/017770d04756256e83cb22dde4b1dbe05f9cd7c9)
+- [Original final experiment](https://github.com/verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU/actions/runs/38777767686)
+- [Scenario statistical correction](https://github.com/verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU/actions/runs/39043012507)
+- [Strong baselines, unified metrics and trust checks](https://github.com/verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU/actions/runs/39046010598)
+
+The repository's earlier simulation is preserved below as historical work. Its architecture and metrics are distinct from the current article's Stage38 evidence.
+
+---
+
 # Adaptive hierarchical 5G SBA monitoring with authenticated CU/KIE
 
 Reproducible **simulation** for a research hypothesis: can zone-aware, risk-adaptive challenge scheduling shorten the delay of detecting compromised 5G Core network functions **at the same CU signalling budget** as periodic polling?

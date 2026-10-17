@@ -1,0 +1,40 @@
+name: Stage38 scenario-level statistical correction
+on:
+  push:
+    branches: ['codex/stage38-scenario-statistics']
+    paths:
+      - '.github/workflows/stage38-statistical-correction.yml'
+      - 'research/statistical_reanalysis.py'
+      - 'research/test_statistical_reanalysis.py'
+      - 'research/download_stage38_statistics.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reanalyse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate statistical calculations and counting
+        run: python -m unittest discover -s research -p test_statistical_reanalysis.py -v
+      - name: Download and hash-check frozen source archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python research/download_stage38_statistics.py
+      - name: Recompute scenario outcomes and conditional intervals
+        run: python research/statistical_reanalysis.py --input stage38_input --output stage38_statistics
+      - name: Publish statistical correction summary
+        run: |
+          cp stage38_input/provenance.json stage38_statistics/source_archives.json
+          cat stage38_statistics/REPORT_RU.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage38-scenario-statistical-correction
+          path: stage38_statistics/
+          if-no-files-found: error
+          retention-days: 90
