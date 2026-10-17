@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stage39-live-open5gs-\${{ github.ref }}
+  group: stage39-live-open5gs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
