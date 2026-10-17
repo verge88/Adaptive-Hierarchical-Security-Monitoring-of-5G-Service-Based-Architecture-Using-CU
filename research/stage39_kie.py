@@ -350,6 +350,9 @@ def mutate(profiles,slot,kind):
         p["fqdn"]="poisoned.invalid"
     elif kind=="type":
         p["nfType"]="SMF" if p["nfType"]!="SMF" else "AMF"
+    elif kind=="compound":
+        p["nfInstanceId"]="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+        p.setdefault("nfServices",[]).append({"serviceName":"unauthorized-compound","scheme":"http","status":"REGISTERED","versions":["v1"],"endpoints":[{"ip":"203.0.113.98","port":8080,"transport":"TCP"}]})
     elif kind=="duplicate":
         out.append(copy.deepcopy(p))
     else:
@@ -415,7 +418,9 @@ def run_ci(policy,output,soak_seconds):
     if StreamRelationalVerifier(policy).verify(profiles,witnesses):
         raise RuntimeError("clean baseline rejected")
 
-    kinds=("identity","endpoint","service","fqdn","type","duplicate")
+    article_kinds=("identity","endpoint","service","fqdn","type","compound")
+    boundary_kinds=("duplicate",)
+    kinds=article_kinds+boundary_kinds
     attack_matrix={}
     latencies=[]
     per_nf_type={}
@@ -514,7 +519,9 @@ def run_ci(policy,output,soak_seconds):
         raise RuntimeError("clean soak false alert")
 
     p95=nearest_rank(latencies,0.95)
-    total_attacks=len(policy.slots)*len(kinds)
+    total_article_attacks=len(policy.slots)*len(article_kinds)
+    total_boundary_attacks=len(policy.slots)*len(boundary_kinds)
+    total_attacks=total_article_attacks+total_boundary_attacks
     total_poison=len(poison_results)
     total_lifecycle=len(policy.slots)*3
     report={
@@ -554,9 +561,14 @@ def run_ci(policy,output,soak_seconds):
             "by_slot_and_field":poison_results,
         },
         "attacks":{
-            "families":list(kinds),
-            "cases":total_attacks,
-            "detected":total_attacks,
+            "article_families":list(article_kinds),
+            "article_cases":total_article_attacks,
+            "article_detected":total_article_attacks,
+            "boundary_families":list(boundary_kinds),
+            "boundary_cases":total_boundary_attacks,
+            "boundary_detected":total_boundary_attacks,
+            "total_cases":total_attacks,
+            "total_detected":total_attacks,
             "per_nf_type":per_nf_type,
             "matrix":attack_matrix,
         },
@@ -588,7 +600,8 @@ def run_ci(policy,output,soak_seconds):
         f"- Lifecycle stop/start/restart: {total_lifecycle}/{total_lifecycle} cases passed\n"
         f"- KIE replay after restart rejected: {report['kie']['replay_after_restart_rejected']}\n"
         f"- Persistent FQDN/service poisoning: {total_poison}/{total_poison} detected\n"
-        f"- Attack matrix: {total_attacks}/{total_attacks} detected across all configured slots\n"
+        f"- Article mutation matrix: {total_article_attacks}/{total_article_attacks} detected across all configured slots\n"
+        f"- Duplicate boundary matrix: {total_boundary_attacks}/{total_boundary_attacks} detected\n"
         f"- Detector execution median / p95 / max: "
         f"{report['detector_execution_latency_ms']['median']:.3f} / "
         f"{report['detector_execution_latency_ms']['p95_nearest_rank']:.3f} / "
