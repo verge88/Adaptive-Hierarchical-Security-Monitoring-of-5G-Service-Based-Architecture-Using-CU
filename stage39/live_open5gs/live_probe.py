@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -26,6 +27,7 @@ WITNESS=Path("/run/stage39/witness")
 MUTATION_ROOT=Path("/run/stage38")
 MUTATION_PLAN=MUTATION_ROOT/"plan.tsv"
 MUTATION_ENABLE=MUTATION_ROOT/"enabled"
+LIVE_POLICY_PATH=ROOT/"live_policy.json"
 NRF_HOST="127.0.0.10"
 NRF_PORT=80
 
@@ -90,22 +92,34 @@ def wait_tcp(host,port=80,seconds=15):
     raise RuntimeError(f"TCP not ready {host}:{port}")
 
 
-async def h2_get(host,port,path,timeout=5):
+async def h2_request(method,host,port,path,body=None,timeout=5):
     reader,writer=await asyncio.open_connection(host,port)
     conn=H2Connection(H2Configuration(client_side=True,header_encoding="utf-8"))
-    body=bytearray()
+    response_body=bytearray()
     status=None
+    payload=None if body is None else (
+        body if isinstance(body,bytes)
+        else json.dumps(body,separators=(",",":")).encode()
+    )
     try:
         conn.initiate_connection()
         stream=conn.get_next_available_stream_id()
-        conn.send_headers(stream,[
-            (":method","GET"),
+        headers=[
+            (":method",method),
             (":scheme","http"),
             (":authority",f"{host}:{port}"),
             (":path",path),
             ("accept","application/json"),
             ("user-agent","stage39-live-probe"),
-        ],end_stream=True)
+        ]
+        if payload is not None:
+            headers.extend([
+                ("content-type","application/json"),
+                ("content-length",str(len(payload))),
+            ])
+        conn.send_headers(stream,headers,end_stream=payload is None)
+        if payload is not None:
+            conn.send_data(stream,payload,end_stream=True)
         writer.write(conn.data_to_send())
         await writer.drain()
         while True:
@@ -116,14 +130,14 @@ async def h2_get(host,port,path,timeout=5):
                 if isinstance(event,ResponseReceived) and event.stream_id==stream:
                     status=int(dict(event.headers)[":status"])
                 elif isinstance(event,DataReceived) and event.stream_id==stream:
-                    body.extend(event.data)
+                    response_body.extend(event.data)
                     conn.acknowledge_received_data(
                         event.flow_controlled_length,event.stream_id
                     )
                 elif isinstance(event,StreamReset) and event.stream_id==stream:
                     raise RuntimeError("HTTP/2 stream reset")
                 elif isinstance(event,StreamEnded) and event.stream_id==stream:
-                    return status,bytes(body)
+                    return status,bytes(response_body)
             outbound=conn.data_to_send()
             if outbound:
                 writer.write(outbound)
@@ -135,6 +149,9 @@ async def h2_get(host,port,path,timeout=5):
         except Exception:
             pass
 
+
+async def h2_get(host,port,path,timeout=5):
+    return await h2_request("GET",host,port,path,timeout=timeout)
 
 async def discover(nf_type):
     query=urlencode({
@@ -154,6 +171,98 @@ async def discover(nf_type):
         raise RuntimeError(f"discovery {nf_type} missing nfInstances")
     return rows
 
+
+
+def load_live_policy():
+    doc=json.loads(LIVE_POLICY_PATH.read_text())
+    if int(doc.get("version",0))!=1 or not isinstance(doc.get("slots"),dict):
+        raise RuntimeError("invalid live policy")
+    return doc
+
+
+def profile_service_names(row):
+    return sorted(
+        str(s.get("serviceName",""))
+        for s in row.get("nfServices",[])
+        if isinstance(s,dict)
+    )
+
+
+def live_policy_alerts(nf_type,rows,witness,policy):
+    expected_slots={
+        slot:item
+        for slot,item in policy["slots"].items()
+        if item["nf_type"]==nf_type
+    }
+    alerts=[]
+    assigned=set()
+    for row in rows:
+        addresses=row.get("ipv4Addresses")
+        addresses=addresses if isinstance(addresses,list) else []
+        candidates=[
+            slot for slot,item in expected_slots.items()
+            if item["endpoint"] in addresses
+        ]
+        if len(candidates)!=1:
+            alerts.append(
+                f"unassigned_or_ambiguous_endpoint:{nf_type}:"
+                f"{','.join(str(x) for x in addresses)}"
+            )
+            continue
+        slot=candidates[0]
+        assigned.add(slot)
+        expected=expected_slots[slot]
+        if row.get("nfType")!=expected["nf_type"]:
+            alerts.append(f"nf_type:{slot}")
+        if sorted(str(x) for x in addresses)!=[expected["endpoint"]]:
+            alerts.append(f"endpoint:{slot}")
+        if str(row.get("fqdn") or "")!=str(expected.get("fqdn") or ""):
+            alerts.append(f"fqdn:{slot}")
+        expected_services=expected.get("service_names")
+        if expected_services is not None:
+            if profile_service_names(row)!=sorted(expected_services):
+                alerts.append(f"services:{slot}")
+        w=witness.get(slot)
+        if not isinstance(w,dict):
+            alerts.append(f"witness_missing:{slot}")
+        else:
+            if str(row.get("nfInstanceId","")).lower()!=str(
+                w.get("nf_instance_id","")
+            ).lower():
+                alerts.append(f"witness_uuid:{slot}")
+            if w.get("nf_type")!=expected["nf_type"]:
+                alerts.append(f"witness_type:{slot}")
+            if w.get("endpoint")!=expected["endpoint"]:
+                alerts.append(f"witness_endpoint:{slot}")
+            if w.get("process_alive") is not True:
+                alerts.append(f"witness_process:{slot}")
+            if w.get("tcp_reachable") is not True:
+                alerts.append(f"witness_reachability:{slot}")
+    missing=sorted(set(expected_slots)-assigned)
+    alerts.extend(f"missing_slot:{slot}" for slot in missing)
+    return sorted(set(alerts))
+
+
+def validate_all_live_policy(discovery,witness,policy):
+    alerts={}
+    for typ,rows in discovery.items():
+        found=live_policy_alerts(typ,rows,witness,policy)
+        if found:
+            alerts[typ]=found
+    nrf=policy["slots"]["nrf1"]
+    nrf_w=witness.get("nrf1")
+    if not isinstance(nrf_w,dict):
+        alerts.setdefault("NRF",[]).append("witness_missing:nrf1")
+    else:
+        if nrf_w.get("nf_type")!=nrf["nf_type"]:
+            alerts.setdefault("NRF",[]).append("witness_type:nrf1")
+        if nrf_w.get("endpoint")!=nrf["endpoint"]:
+            alerts.setdefault("NRF",[]).append("witness_endpoint:nrf1")
+        if nrf_w.get("process_alive") is not True:
+            alerts.setdefault("NRF",[]).append("witness_process:nrf1")
+        if nrf_w.get("tcp_reachable") is not True:
+            alerts.setdefault("NRF",[]).append("witness_reachability:nrf1")
+    return alerts
 
 def canonical_rows(rows):
     return sorted(
@@ -315,7 +424,7 @@ async def clean_discovery_snapshot():
     return result
 
 
-async def run_native_mutations(clean):
+async def run_native_mutations(clean,witness,policy):
     write_mutation_plan()
     matrix={}
     latencies=[]
@@ -333,9 +442,17 @@ async def run_native_mutations(clean):
                         f"native mutation not observed: {typ}/{kind}"
                     )
                 validate_family_change(kind,clean[typ],rows,endpoint)
+                policy_alerts=live_policy_alerts(
+                    typ,rows,witness,policy
+                )
+                if not policy_alerts:
+                    raise RuntimeError(
+                        f"independent live policy missed {typ}/{kind}"
+                    )
                 elapsed=(time.perf_counter_ns()-started)/1_000_000
                 matrix[typ][kind]={
                     "detected":True,
+                    "policy_alerts":policy_alerts,
                     "discovery_request_to_detection_ms":elapsed,
                 }
                 latencies.append(elapsed)
@@ -349,6 +466,14 @@ async def run_native_mutations(clean):
     }
     if not all(restored_equal.values()):
         raise RuntimeError(f"clean discovery did not restore: {restored_equal}")
+    restored_policy_alerts=validate_all_live_policy(
+        restored,witness,policy
+    )
+    if restored_policy_alerts:
+        raise RuntimeError(
+            f"restored discovery violates independent policy: "
+            f"{restored_policy_alerts}"
+        )
 
     nrf_log=LOG/"nrf.log"
     text=nrf_log.read_text(errors="replace") if nrf_log.exists() else ""
@@ -366,6 +491,7 @@ async def run_native_mutations(clean):
         "families":list(MUTATION_KINDS),
         "matrix":matrix,
         "clean_restored_after_hook":restored_equal,
+        "restored_policy_alerts":restored_policy_alerts,
         "native_marker_count":marker_count,
         "timing_ms":{
             "measurement_scope":
@@ -377,6 +503,104 @@ async def run_native_mutations(clean):
             "max":max(latencies),
         },
     }
+
+
+def poison_registration_profile(clean_profile):
+    fake=copy.deepcopy(clean_profile)
+    fake_uuid="39000000-0000-4000-8000-000000000001"
+    fake["nfInstanceId"]=fake_uuid
+    fake["nfStatus"]="REGISTERED"
+    fake["fqdn"]="poisoned-stage39.invalid"
+    fake["ipv4Addresses"]=["203.0.113.250"]
+    for index,service in enumerate(fake.get("nfServices",[]),1):
+        if not isinstance(service,dict):
+            continue
+        service["serviceInstanceId"]=(
+            f"39000000-0000-4000-8000-{index:012d}"
+        )
+        service["fqdn"]="poisoned-stage39.invalid"
+        for endpoint in service.get("ipEndPoints",[]):
+            if isinstance(endpoint,dict):
+                endpoint["ipv4Address"]="203.0.113.250"
+                endpoint["port"]=9380+index
+        if "apiPrefix" in service:
+            service["apiPrefix"]=f"http://203.0.113.250:{9380+index}"
+    return fake_uuid,fake
+
+
+async def run_persistent_registration_poisoning(clean,witness,policy):
+    source=row_with_endpoint(clean["NSSF"],PROCESSES["nssf1"][3])
+    fake_uuid,fake=poison_registration_profile(source)
+    path=f"/nnrf-nfm/v1/nf-instances/{fake_uuid}"
+    status,body=await h2_request(
+        "PUT",NRF_HOST,NRF_PORT,path,body=fake,timeout=8
+    )
+    if status not in {200,201}:
+        raise RuntimeError(
+            f"persistent registration poison rejected unexpectedly "
+            f"status={status} body={body[:1000]!r}"
+        )
+    try:
+        rows=await discover("NSSF")
+        fake_rows=[
+            row for row in rows
+            if str(row.get("nfInstanceId","")).lower()==fake_uuid
+        ]
+        if len(fake_rows)!=1:
+            raise RuntimeError(
+                f"poisoned registration not discoverable: "
+                f"matches={len(fake_rows)}"
+            )
+        alerts=live_policy_alerts("NSSF",rows,witness,policy)
+        if not alerts:
+            raise RuntimeError(
+                "independent live policy accepted persistent poison"
+            )
+        poison={
+            "registration_status":status,
+            "fake_nf_instance_id":fake_uuid,
+            "discoverable_after_registration":True,
+            "discovery_count_with_poison":len(rows),
+            "independent_policy_rejected":True,
+            "policy_alerts":alerts,
+        }
+    finally:
+        delete_status,delete_body=await h2_request(
+            "DELETE",NRF_HOST,NRF_PORT,path,timeout=8
+        )
+        if delete_status not in {200,204}:
+            raise RuntimeError(
+                f"poison cleanup failed status={delete_status} "
+                f"body={delete_body[:1000]!r}"
+            )
+
+    deadline=time.time()+10
+    restored=None
+    while time.time()<deadline:
+        rows=await discover("NSSF")
+        if (
+            len(rows)==EXPECTED_DISCOVERY["NSSF"]
+            and all(
+                str(row.get("nfInstanceId","")).lower()!=fake_uuid
+                for row in rows
+            )
+        ):
+            restored=rows
+            break
+        await asyncio.sleep(0.1)
+    if restored is None:
+        raise RuntimeError("persistent poison cleanup did not converge")
+    restored_alerts=live_policy_alerts(
+        "NSSF",restored,witness,policy
+    )
+    if restored_alerts:
+        raise RuntimeError(
+            f"clean NSSF state violates policy after poison cleanup: "
+            f"{restored_alerts}"
+        )
+    poison["cleanup_status"]=delete_status
+    poison["clean_state_restored"]=True
+    return poison
 
 
 async def main_async(output):
@@ -439,7 +663,22 @@ async def main_async(output):
                 f"missing runtime witness for {missing}; logs={tails}"
             )
 
-        native_mutations=await run_native_mutations(clean)
+        live_policy=load_live_policy()
+        clean_policy_alerts=validate_all_live_policy(
+            clean,witness,live_policy
+        )
+        if clean_policy_alerts:
+            raise RuntimeError(
+                f"clean live state violates independent policy: "
+                f"{clean_policy_alerts}"
+            )
+
+        persistent_poison=await run_persistent_registration_poisoning(
+            clean,witness,live_policy
+        )
+        native_mutations=await run_native_mutations(
+            clean,witness,live_policy
+        )
 
         live_evidence={
             "open5gs_ref":"v2.7.6",
@@ -471,6 +710,14 @@ async def main_async(output):
                 for typ,rows in clean.items()
             },
             "runtime_witness":witness,
+            "independent_live_policy":{
+                "document":live_policy,
+                "sha256":hashlib.sha256(
+                    LIVE_POLICY_PATH.read_bytes()
+                ).hexdigest(),
+                "clean_policy_alerts":clean_policy_alerts,
+            },
+            "persistent_registration_poisoning":persistent_poison,
             "native_mutations":native_mutations,
         }
 
@@ -482,7 +729,7 @@ async def main_async(output):
             b"stage39-live-subject"
         ).digest()
         policy_digest=hashlib.sha256(
-            (ROOT/"full_profile_policy.json").read_bytes()
+            LIVE_POLICY_PATH.read_bytes()
         ).hexdigest()
         now=int(time.time()*1000)
         anchor=FreshnessAnchor(
@@ -512,6 +759,8 @@ async def main_async(output):
                 "runtime_witness_records":len(witness),
                 "native_mutation_cases":native_mutations["cases"],
                 "native_mutation_detected":native_mutations["detected"],
+                "persistent_registration_poison_rejected":
+                    persistent_poison["independent_policy_rejected"],
                 "evidence_digest":telemetry_digest,
             },
             subject_key,
@@ -531,6 +780,11 @@ async def main_async(output):
                 k:len(v) for k,v in clean.items()
             },
             "runtime_witness_records":len(witness),
+            "independent_live_policy":{
+                "sha256":policy_digest,
+                "clean_policy_alerts":clean_policy_alerts,
+            },
+            "persistent_registration_poisoning":persistent_poison,
             "native_mutations":{
                 "cases":native_mutations["cases"],
                 "detected":native_mutations["detected"],
@@ -545,8 +799,8 @@ async def main_async(output):
             "kie_bound_to_live_evidence":True,
             "telemetry_digest":telemetry_digest,
             "limitations":[
-                "Native mutations alter serialized NRF discovery responses, "
-                "not the persistent NRF registration database.",
+                "Persistent poisoning test uses an intentionally registered "
+                "test profile and removes it after validation.",
                 "NRF is controlled as a live process but is not mutated as a "
                 "self-discovered NRF profile.",
                 "Timing starts at the local discovery request, not at a "
@@ -571,6 +825,10 @@ async def main_async(output):
             f"{report['registered_profile_observed']}\n"
             f"- Runtime witness records: "
             f"{report['runtime_witness_records']}\n"
+            f"- Independent live policy clean alerts: "
+            f"{len(clean_policy_alerts)}\n"
+            f"- Persistent registration poisoning rejected by policy: "
+            f"{persistent_poison['independent_policy_rejected']}\n"
             f"- Native response mutations: "
             f"{native_mutations['detected']}/{native_mutations['cases']}\n"
             f"- Mutation marker count: "
