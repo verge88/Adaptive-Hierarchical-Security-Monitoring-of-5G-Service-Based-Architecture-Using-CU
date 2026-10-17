@@ -1017,6 +1017,180 @@ async def run_persistent_registration_poisoning(clean,witness,policy):
     return poison
 
 
+
+def registry_service_poison(profile,template_service,typ,index):
+    poisoned=copy.deepcopy(profile)
+    services=poisoned.get("nfServices")
+    if not isinstance(services,list):
+        services=[]
+        poisoned["nfServices"]=services
+    injected=copy.deepcopy(template_service)
+    injected["serviceInstanceId"]=(
+        f"39000000-0000-4000-9000-{index:012d}"
+    )
+    original_names={
+        str(s.get("serviceName",""))
+        for s in services if isinstance(s,dict)
+    }
+    candidates=[
+        "nnrf-disc","nnssf-nsselection","nausf-auth",
+        "nbsf-management","nudm-sdm","namf-comm",
+        "nsmf-pdusession","npcf-am-policy-control",
+    ]
+    replacement=next(
+        name for name in candidates if name not in original_names
+    )
+    injected["serviceName"]=replacement
+    injected["fqdn"]=f"registry-poison-{typ.lower()}.stage39.invalid"
+    services.append(injected)
+    return poisoned,replacement
+
+
+async def put_nf_profile(profile):
+    nf_id=str(profile.get("nfInstanceId",""))
+    if not nf_id:
+        raise RuntimeError("profile missing nfInstanceId")
+    path=f"/nnrf-nfm/v1/nf-instances/{nf_id}"
+    status,body=await h2_request(
+        "PUT",NRF_HOST,NRF_PORT,path,body=profile,timeout=8
+    )
+    if status not in {200,201}:
+        raise RuntimeError(
+            f"NF profile PUT failed id={nf_id} "
+            f"status={status} body={body[:1000]!r}"
+        )
+    return status
+
+
+async def wait_policy_field_alert(
+    typ,slot,witness,policy,expected_alert,timeout_seconds=5
+):
+    deadline=time.monotonic()+timeout_seconds
+    last=None
+    while time.monotonic()<deadline:
+        rows=await discover(typ)
+        alerts=live_policy_alerts(
+            typ,rows,witness,policy,include_witness=True
+        )
+        last={"rows":rows,"alerts":alerts}
+        if expected_alert in alerts:
+            return rows,alerts
+        await asyncio.sleep(0.03)
+    raise RuntimeError(
+        f"registry poison not observed {typ}/{slot}/"
+        f"{expected_alert}: last={last}"
+    )
+
+
+async def wait_policy_clean(
+    typ,witness,policy,timeout_seconds=8
+):
+    deadline=time.monotonic()+timeout_seconds
+    last=None
+    while time.monotonic()<deadline:
+        rows=await discover(typ)
+        alerts=live_policy_alerts(
+            typ,rows,witness,policy,include_witness=True
+        )
+        last=alerts
+        if not alerts:
+            return rows
+        await asyncio.sleep(0.05)
+    raise RuntimeError(
+        f"registry restore did not converge for {typ}: {last}"
+    )
+
+
+async def run_live_registry_field_poisoning_matrix(
+    clean,witness,policy
+):
+    template_service=None
+    for rows in clean.values():
+        for row in rows:
+            services=row.get("nfServices")
+            if isinstance(services,list) and services:
+                template_service=copy.deepcopy(services[0])
+                break
+        if template_service is not None:
+            break
+    if template_service is None:
+        raise RuntimeError("no live service template available")
+
+    matrix={}
+    case_index=0
+    for typ in EXPECTED_DISCOVERY:
+        slot,_=MUTATION_TARGET_SLOT[typ]
+        endpoint=PROCESSES[slot][3]
+        source=copy.deepcopy(row_with_endpoint(clean[typ],endpoint))
+        nf_id=str(source.get("nfInstanceId",""))
+        if not nf_id:
+            raise RuntimeError(f"missing live UUID for {typ}/{slot}")
+        matrix[typ]={}
+        for field in ("fqdn","services"):
+            case_index+=1
+            original=copy.deepcopy(source)
+            poisoned=copy.deepcopy(source)
+            if field=="fqdn":
+                poisoned["fqdn"]=(
+                    f"registry-poison-{typ.lower()}.stage39.invalid"
+                )
+                expected_alert=f"fqdn:{slot}"
+                expected_value=poisoned["fqdn"]
+            else:
+                poisoned,expected_value=registry_service_poison(
+                    source,template_service,typ,case_index
+                )
+                expected_alert=f"services:{slot}"
+
+            status=await put_nf_profile(poisoned)
+            try:
+                rows,alerts=await wait_policy_field_alert(
+                    typ,slot,witness,policy,expected_alert
+                )
+                observed=row_with_uuid(rows,nf_id)
+                if field=="fqdn":
+                    if str(observed.get("fqdn") or "")!=expected_value:
+                        raise RuntimeError(
+                            f"live registry FQDN poison not visible "
+                            f"{typ}/{slot}"
+                        )
+                else:
+                    if expected_value not in profile_service_names(observed):
+                        raise RuntimeError(
+                            f"live registry service poison not visible "
+                            f"{typ}/{slot}"
+                        )
+                matrix[typ][field]={
+                    "put_status":status,
+                    "discoverable":True,
+                    "expected_alert":expected_alert,
+                    "policy_alerts":alerts,
+                    "detected":True,
+                }
+            finally:
+                await put_nf_profile(original)
+                await wait_policy_clean(typ,witness,policy)
+
+    cases=len(EXPECTED_DISCOVERY)*2
+    detected=sum(
+        int(row["detected"])
+        for fields in matrix.values()
+        for row in fields.values()
+    )
+    if detected!=cases:
+        raise RuntimeError(
+            f"live registry poison matrix {detected}/{cases}"
+        )
+    return {
+        "cases":cases,
+        "detected":detected,
+        "fields":["fqdn","services"],
+        "types":list(EXPECTED_DISCOVERY),
+        "matrix":matrix,
+        "clean_restored":True,
+    }
+
+
 async def main_async(
     output,external_witness=None,external_public_key=None,
     external_challenge=None,external_mutation_control=None,
@@ -1113,6 +1287,11 @@ async def main_async(
         persistent_poison=await run_persistent_registration_poisoning(
             clean,witness,live_policy
         )
+        registry_field_poisoning=(
+            await run_live_registry_field_poisoning_matrix(
+                clean,witness,live_policy
+            )
+        )
         native_mutations=await run_native_mutations(
             clean,witness,live_policy,external_mutation_control
         )
@@ -1157,6 +1336,8 @@ async def main_async(
                 "clean_policy_alerts":clean_policy_alerts,
             },
             "persistent_registration_poisoning":persistent_poison,
+            "live_registry_field_poisoning":
+                registry_field_poisoning,
             "native_mutations":native_mutations,
         }
 
@@ -1238,6 +1419,8 @@ async def main_async(
                 "clean_policy_alerts":clean_policy_alerts,
             },
             "persistent_registration_poisoning":persistent_poison,
+            "live_registry_field_poisoning":
+                registry_field_poisoning,
             "native_mutations":{
                 "cases":native_mutations["cases"],
                 "detected":native_mutations["detected"],
@@ -1305,6 +1488,9 @@ async def main_async(
             f"{len(clean_policy_alerts)}\n"
             f"- Persistent registration poisoning rejected by policy: "
             f"{persistent_poison['independent_policy_rejected']}\n"
+            f"- Live registry FQDN/service poisoning matrix: "
+            f"{registry_field_poisoning['detected']}/"
+            f"{registry_field_poisoning['cases']}\n"
             f"- Native article mutation variants: "
             f"{native_mutations['article_detected']}/"
             f"{native_mutations['article_cases']}\n"
