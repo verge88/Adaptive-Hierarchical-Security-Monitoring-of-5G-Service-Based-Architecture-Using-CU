@@ -113,7 +113,7 @@ class PersistentRegistry:
 
 
 class FreshnessAnchor:
-    def __init__(self,path,mirror_path=None,seal_key=None):
+    def __init__(self,path,mirror_path=None,seal_key=None,must_recover=False):
         self.path=Path(path)
         self.mirror_path=Path(mirror_path) if mirror_path else None
         self.seal_key=seal_key
@@ -131,6 +131,8 @@ class FreshnessAnchor:
             self.state=state
             self._validate()
             self._save_primary()
+        elif must_recover:
+            raise SecurityError("freshness state unavailable; refusing unsafe reset")
 
     def _validate(self):
         if not isinstance(self.state,dict) or not isinstance(self.state.get("subjects"),dict):
@@ -538,6 +540,7 @@ def run_ci(policy,output,soak_seconds):
             "policy_binding":True,
             "replay_after_restart_rejected":True,
             "primary_anchor_loss_recovered":True,
+            "total_anchor_loss_fail_closed":True,
             "tamper_rejected":True,
         },
         "streaming":{
