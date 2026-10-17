@@ -18,7 +18,7 @@ COPY stage39/live_open5gs/stage39-nnrf-handler.c /tmp/stage39-nnrf-handler.c
 COPY stage38/patch_sbi_context.py /tmp/patch_sbi_context.py
 
 WORKDIR /src/open5gs
-RUN mkdir -p /var/log/open5gs /run/stage39/witness \
+RUN mkdir -p /var/log/open5gs /run/stage39/witness /run/stage38 \
     && test "$(git describe --tags --exact-match)" = "v2.7.6" \
     && cp /tmp/stage39-nnrf-handler.c src/nrf/nnrf-handler.c \
     && python3 /tmp/patch_sbi_context.py \
