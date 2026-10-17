@@ -77,6 +77,25 @@ MUTATION_KINDS=(
     "nf_type_substitution",
     "compound_identity_service",
 )
+BOUNDARY_MUTATION_KINDS=("duplicate_profile",)
+
+
+def mutation_cases():
+    cases=[]
+    for kind in MUTATION_KINDS:
+        for variant in range(1,5):
+            cases.append({
+                "kind":kind,
+                "variant":variant,
+                "article_family":True,
+            })
+    for kind in BOUNDARY_MUTATION_KINDS:
+        cases.append({
+            "kind":kind,
+            "variant":1,
+            "article_family":False,
+        })
+    return cases
 
 
 def tcp_ready(host,port=80,timeout=0.3):
@@ -202,7 +221,15 @@ def live_policy_alerts(nf_type,rows,witness,policy):
         if item["nf_type"]==nf_type
     }
     alerts=[]
+    ids=[
+        str(row.get("nfInstanceId","")).lower()
+        for row in rows
+        if isinstance(row,dict)
+    ]
+    if len(ids)!=len(set(ids)):
+        alerts.append(f"duplicate_nfInstanceId:{nf_type}")
     assigned=set()
+    assigned_counts={}
     for row in rows:
         addresses=row.get("ipv4Addresses")
         addresses=addresses if isinstance(addresses,list) else []
@@ -218,6 +245,7 @@ def live_policy_alerts(nf_type,rows,witness,policy):
             continue
         slot=candidates[0]
         assigned.add(slot)
+        assigned_counts[slot]=assigned_counts.get(slot,0)+1
         expected=expected_slots[slot]
         if row.get("nfType")!=expected["nf_type"]:
             alerts.append(f"nf_type:{slot}")
@@ -245,6 +273,9 @@ def live_policy_alerts(nf_type,rows,witness,policy):
                 alerts.append(f"witness_process:{slot}")
             if w.get("tcp_reachable") is not True:
                 alerts.append(f"witness_reachability:{slot}")
+    for slot,count in assigned_counts.items():
+        if count>1:
+            alerts.append(f"ambiguous_slot:{slot}")
     missing=sorted(set(expected_slots)-assigned)
     alerts.extend(f"missing_slot:{slot}" for slot in missing)
     return sorted(set(alerts))
@@ -391,6 +422,16 @@ def row_with_uuid(rows,nf_id):
 def validate_family_change(kind,clean_rows,mutated_rows,target_endpoint):
     clean=row_with_endpoint(clean_rows,target_endpoint)
     clean_uuid=str(clean.get("nfInstanceId","")).lower()
+    if kind=="duplicate_profile":
+        duplicates=[
+            row for row in mutated_rows
+            if str(row.get("nfInstanceId","")).lower()==clean_uuid
+        ]
+        if len(duplicates)<2:
+            raise RuntimeError(
+                "duplicate_profile did not duplicate the target profile"
+            )
+        return
     if kind in {"identity_replacement","compound_identity_service"}:
         mutated=row_with_endpoint(mutated_rows,target_endpoint)
     else:
@@ -496,11 +537,14 @@ def stop_all(processes):
 def write_mutation_plan():
     MUTATION_ROOT.mkdir(parents=True,exist_ok=True)
     lines=[]
+    cases=mutation_cases()
     for typ in EXPECTED_DISCOVERY:
         _,slot_code=MUTATION_TARGET_SLOT[typ]
-        for tick,kind in enumerate(MUTATION_KINDS):
-            variant=(tick%4)+1
-            lines.append(f"{typ}\t{tick}\t{kind}\t{slot_code*100+variant}")
+        for tick,case in enumerate(cases):
+            lines.append(
+                f"{typ}\t{tick}\t{case['kind']}\t"
+                f"{slot_code*100+case['variant']}"
+            )
     MUTATION_PLAN.write_text("\n".join(lines)+"\n")
     MUTATION_ENABLE.touch()
 
