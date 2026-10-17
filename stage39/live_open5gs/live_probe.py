@@ -199,6 +199,32 @@ async def discover(nf_type):
     return (await discover_document(nf_type))["nfInstances"]
 
 
+
+def verify_live_policy_signature(public_key_path,signature_path):
+    public_key=serialization.load_pem_public_key(
+        Path(public_key_path).read_bytes()
+    )
+    if not isinstance(public_key,ec.EllipticCurvePublicKey):
+        raise RuntimeError("live policy signing key must be EC")
+    signature=Path(signature_path).read_bytes()
+    try:
+        public_key.verify(
+            signature,
+            LIVE_POLICY_PATH.read_bytes(),
+            ec.ECDSA(hashes.SHA256()),
+        )
+    except Exception as exc:
+        raise RuntimeError("independent live policy signature invalid") from exc
+    public_pem=Path(public_key_path).read_bytes()
+    return {
+        "verified":True,
+        "public_key_sha256":hashlib.sha256(public_pem).hexdigest(),
+        "policy_file_sha256":
+            hashlib.sha256(LIVE_POLICY_PATH.read_bytes()).hexdigest(),
+        "signature_sha256":hashlib.sha256(signature).hexdigest(),
+    }
+
+
 def load_live_policy():
     doc=json.loads(LIVE_POLICY_PATH.read_text())
     if int(doc.get("version",0))!=1 or not isinstance(doc.get("slots"),dict):
@@ -1065,6 +1091,15 @@ async def main_async(
                     f"missing runtime witness for {missing}; logs={tails}"
                 )
 
+        policy_signature_evidence=None
+        if policy_public_key is not None or policy_signature is not None:
+            if policy_public_key is None or policy_signature is None:
+                raise RuntimeError(
+                    "independent live policy requires public key and signature"
+                )
+            policy_signature_evidence=verify_live_policy_signature(
+                policy_public_key,policy_signature
+            )
         live_policy=load_live_policy()
         clean_policy_alerts=validate_all_live_policy(
             clean,witness,live_policy
@@ -1118,6 +1153,7 @@ async def main_async(
                 "sha256":hashlib.sha256(
                     LIVE_POLICY_PATH.read_bytes()
                 ).hexdigest(),
+                "signature":policy_signature_evidence,
                 "clean_policy_alerts":clean_policy_alerts,
             },
             "persistent_registration_poisoning":persistent_poison,
@@ -1198,6 +1234,7 @@ async def main_async(
             },
             "independent_live_policy":{
                 "sha256":policy_digest,
+                "signature":policy_signature_evidence,
                 "clean_policy_alerts":clean_policy_alerts,
             },
             "persistent_registration_poisoning":persistent_poison,
