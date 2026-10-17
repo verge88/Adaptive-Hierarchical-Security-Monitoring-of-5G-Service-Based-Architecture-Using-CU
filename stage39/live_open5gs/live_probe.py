@@ -1045,8 +1045,9 @@ async def main_async(
                 "Mutation-to-detection timing begins at instrumentation inside "
                 "the NRF response-mutation path; it is not an external "
                 "attacker-onset timestamp.",
-                "mTLS/OAuth2 and SEPP-like checks remain in the separate "
-                "Stage39 transport probe and are not 3GPP conformance tests.",
+                "Live Open5GS mTLS is validated by a dedicated second "
+                "pass in the same workflow; OAuth2 and SEPP-like checks remain "
+                "separate and are not 3GPP conformance tests.",
             ],
         }
         (output/"live_open5gs_report.json").write_text(
