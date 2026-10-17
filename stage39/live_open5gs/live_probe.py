@@ -1220,6 +1220,32 @@ async def put_nf_profile(profile):
     return status
 
 
+
+async def delete_nf_profile(nf_id):
+    path=f"/nnrf-nfm/v1/nf-instances/{nf_id}"
+    status,body=await h2_request(
+        "DELETE",NRF_HOST,NRF_PORT,path,timeout=8
+    )
+    if status not in {200,204,404}:
+        raise RuntimeError(
+            f"NF profile DELETE failed id={nf_id} "
+            f"status={status} body={body[:1000]!r}"
+        )
+    return status
+
+
+async def replace_nf_profile(profile):
+    nf_id=str(profile.get("nfInstanceId",""))
+    if not nf_id:
+        raise RuntimeError("replacement profile missing nfInstanceId")
+    delete_status=await delete_nf_profile(nf_id)
+    put_status=await put_nf_profile(profile)
+    return {
+        "delete_status":delete_status,
+        "put_status":put_status,
+    }
+
+
 async def wait_policy_field_alert(
     typ,slot,witness,policy,expected_alert,timeout_seconds=5
 ):
@@ -1326,8 +1352,10 @@ async def run_live_registry_field_poisoning_matrix(
                     "detected":True,
                 }
             finally:
-                await put_nf_profile(original)
+                restore=await replace_nf_profile(original)
                 await wait_policy_clean(typ,witness,policy)
+                if field in matrix[typ]:
+                    matrix[typ][field]["restore"]=restore
 
     cases=len(EXPECTED_DISCOVERY)*2
     detected=sum(
