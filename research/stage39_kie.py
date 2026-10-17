@@ -510,6 +510,14 @@ def run_ci(policy,output,soak_seconds):
         except SecurityError:
             pass
 
+        primary.unlink(missing_ok=True)
+        mirror.unlink(missing_ok=True)
+        try:
+            FreshnessAnchor(primary,mirror,seal,must_recover=True)
+            raise RuntimeError("total freshness-state loss allowed unsafe reset")
+        except SecurityError:
+            pass
+
     soak_verifier=StreamRelationalVerifier(policy)
     started=time.perf_counter()
     iterations=false_alerts=0
