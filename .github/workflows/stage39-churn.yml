@@ -1,0 +1,78 @@
+name: Stage39 signed lifecycle churn
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage39-churn.yml'
+      - 'research/stage39_external_scenarios.py'
+      - 'research/stage39_orchestration_eval.py'
+      - 'research/stage39_churn_runner.py'
+      - 'research/stage39_kie.py'
+      - 'stage39/full_profile_policy.json'
+  schedule:
+    - cron: '43 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Benign signed lifecycle churn duration in minutes (1-360)'
+        required: true
+        default: '120'
+permissions:
+  contents: read
+
+concurrency:
+  group: stage39-churn-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  churn:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 370
+    env:
+      DURATION_MINUTES: ${{ github.event_name == 'pull_request' && '2' || github.event_name == 'workflow_dispatch' && inputs.duration_minutes || '120' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate duration
+        run: |
+          case "$DURATION_MINUTES" in
+            ''|*[!0-9]*) echo "duration_minutes must be integer"; exit 2 ;;
+          esac
+          test "$DURATION_MINUTES" -ge 1
+          test "$DURATION_MINUTES" -le 360
+
+      - name: Generate independent orchestrator key
+        run: openssl rand -hex 32 > "$RUNNER_TEMP/stage39-churn-orchestrator.key"
+
+      - name: Run wall-clock benign lifecycle churn
+        run: |
+          set -euo pipefail
+          mkdir -p stage39_churn_out
+          KEY_HEX="$(cat "$RUNNER_TEMP/stage39-churn-orchestrator.key")"
+          seconds=$((DURATION_MINUTES * 60))
+          python research/stage39_churn_runner.py \
+            --policy stage39/full_profile_policy.json \
+            --output stage39_churn_out \
+            --duration-seconds "$seconds" \
+            --batch-events 1500 \
+            --key-hex "$KEY_HEX"
+
+      - name: Publish churn summary
+        if: always()
+        run: |
+          {
+            echo '## Stage39 signed benign lifecycle churn'
+            echo
+            test -f stage39_churn_out/stage39_churn_report.md && \
+              cat stage39_churn_out/stage39_churn_report.md || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage39-churn-evidence
+          path: stage39_churn_out/
+          if-no-files-found: warn
+          retention-days: 90
