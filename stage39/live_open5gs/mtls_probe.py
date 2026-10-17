@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import socket
+import statistics
 import ssl
 import subprocess
 import tempfile
@@ -227,6 +228,53 @@ async def discover(typ):
     return rows,tls_version,cipher
 
 
+
+async def run_discovery_load(total_requests=300,concurrency=20):
+    semaphore=asyncio.Semaphore(concurrency)
+    types=list(EXPECTED)
+    latencies=[]
+    errors=[]
+
+    async def one(index):
+        typ=types[index%len(types)]
+        async with semaphore:
+            started=time.perf_counter_ns()
+            try:
+                rows,_,_=await discover(typ)
+                if len(rows)!=EXPECTED[typ]:
+                    raise RuntimeError(
+                        f"load discovery count {typ}: "
+                        f"{len(rows)} != {EXPECTED[typ]}"
+                    )
+                latencies.append(
+                    (time.perf_counter_ns()-started)/1_000_000
+                )
+            except Exception as exc:
+                errors.append(
+                    f"{typ}:{type(exc).__name__}:{exc}"
+                )
+
+    await asyncio.gather(
+        *(one(i) for i in range(total_requests))
+    )
+    if errors:
+        raise RuntimeError(
+            f"mTLS discovery load errors={len(errors)} "
+            f"sample={errors[:3]}"
+        )
+    ordered=sorted(latencies)
+    p95=ordered[max(0,int(len(ordered)*0.95)-1)]
+    return {
+        "requests":total_requests,
+        "concurrency":concurrency,
+        "errors":0,
+        "median_ms":statistics.median(latencies),
+        "p95_ms":p95,
+        "max_ms":max(latencies),
+        "scope":"fresh TLS+h2 connection per NRF discovery request",
+    }
+
+
 def log_tail(slot):
     p=LOG/f"stage39-mtls-{slot}.log"
     return p.read_text(errors="replace")[-5000:] if p.exists() else ""
@@ -334,6 +382,10 @@ async def main_async(output):
         if not unauthenticated_rejected:
             raise RuntimeError("Open5GS mTLS NRF accepted a client without certificate")
 
+        discovery_load=await run_discovery_load(
+            total_requests=300,concurrency=20
+        )
+
         report={
             "stage":39,
             "kind":"live Open5GS v2.7.6 mutual-TLS SBI smoke",
@@ -350,6 +402,7 @@ async def main_async(output):
                 "ciphers":sorted(ciphers),
                 "certificate_model":"single short-lived CI certificate with SANs for all loopback NF endpoints",
             },
+            "sbi_discovery_load":discovery_load,
             "limitations":[
                 "This verifies Open5GS SBI mutual TLS in the live CI testbed, not per-NF production PKI identity separation.",
                 "A single ephemeral certificate is intentionally shared by the CI NFs; certificate issuance/revocation operations are not evaluated.",
@@ -368,6 +421,9 @@ async def main_async(output):
             f"- Authenticated mTLS discovery: success\n"
             f"- TLS versions: {', '.join(sorted(tls_versions))}\n"
             f"- Ciphers: {', '.join(sorted(ciphers))}\n"
+            f"- mTLS discovery load: {discovery_load['requests']} requests, "
+            f"{discovery_load['errors']} errors, "
+            f"p95 {discovery_load['p95_ms']:.3f} ms\n"
         )
         print(json.dumps(report,indent=2))
     except Exception as exc:
