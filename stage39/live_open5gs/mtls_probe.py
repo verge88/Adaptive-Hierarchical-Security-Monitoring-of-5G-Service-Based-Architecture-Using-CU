@@ -242,9 +242,19 @@ async def main_async(output):
     processes={}
     try:
         processes["nrf1"]=start("nrf1")
-        wait_tcp("127.0.0.10")
+        try:
+            wait_tcp("127.0.0.10")
+        except Exception as exc:
+            raise RuntimeError(
+                f"nrf1 mTLS startup failed: {exc}; log={log_tail('nrf1')}"
+            )
         processes["scp1"]=start("scp1")
-        wait_tcp("127.0.0.11")
+        try:
+            wait_tcp("127.0.0.11")
+        except Exception as exc:
+            raise RuntimeError(
+                f"scp1 mTLS startup failed: {exc}; log={log_tail('scp1')}"
+            )
         for slot in [s for s in PROCESSES if s not in {"nrf1","scp1"}]:
             processes[slot]=start(slot)
             time.sleep(0.12)
@@ -334,6 +344,22 @@ async def main_async(output):
             f"- Ciphers: {', '.join(sorted(ciphers))}\n"
         )
         print(json.dumps(report,indent=2))
+    except Exception as exc:
+        diagnostic={
+            "error":f"{type(exc).__name__}: {exc}",
+            "processes":{
+                slot:{
+                    "pid":proc.pid,
+                    "poll":proc.poll(),
+                    "log_tail":log_tail(slot),
+                }
+                for slot,proc in processes.items()
+            },
+        }
+        (output/"live_open5gs_mtls_failure.json").write_text(
+            json.dumps(diagnostic,indent=2)+"\n"
+        )
+        raise
     finally:
         stop_all(processes)
 
