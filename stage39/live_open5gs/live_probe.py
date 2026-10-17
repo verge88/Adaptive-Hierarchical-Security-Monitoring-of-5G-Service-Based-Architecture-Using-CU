@@ -1326,6 +1326,29 @@ async def run_live_registry_field_poisoning_matrix(
                 )
                 expected_alert=f"services:{slot}"
 
+            if typ=="NRF":
+                path=f"/nnrf-nfm/v1/nf-instances/{nf_id}"
+                status,body=await h2_request(
+                    "PUT",NRF_HOST,NRF_PORT,path,
+                    body=poisoned,timeout=8
+                )
+                if status!=403:
+                    raise RuntimeError(
+                        f"NRF self-profile poison unexpectedly accepted "
+                        f"field={field} status={status} "
+                        f"body={body[:1000]!r}"
+                    )
+                matrix[typ][field]={
+                    "put_status":status,
+                    "discoverable":False,
+                    "expected_alert":None,
+                    "policy_alerts":[],
+                    "detected":True,
+                    "server_prevented":True,
+                    "detail":"Open5GS NRF returned SELF Not allowed",
+                }
+                continue
+
             status=await put_nf_profile(poisoned)
             try:
                 rows,alerts=await wait_policy_field_alert(
@@ -1358,22 +1381,34 @@ async def run_live_registry_field_poisoning_matrix(
                     matrix[typ][field]["restore"]=restore
 
     cases=len(EXPECTED_DISCOVERY)*2
-    detected=sum(
+    protected=sum(
         int(row["detected"])
         for fields in matrix.values()
         for row in fields.values()
     )
-    if detected!=cases:
+    server_prevented=sum(
+        int(bool(row.get("server_prevented")))
+        for fields in matrix.values()
+        for row in fields.values()
+    )
+    applied_and_detected=protected-server_prevented
+    if protected!=cases:
         raise RuntimeError(
-            f"live registry poison matrix {detected}/{cases}"
+            f"live registry poison matrix {protected}/{cases}"
         )
     return {
         "cases":cases,
-        "detected":detected,
+        "protected":protected,
+        "poison_applied_and_detected":applied_and_detected,
+        "server_prevented":server_prevented,
         "fields":["fqdn","services"],
         "types":list(EXPECTED_DISCOVERY),
         "matrix":matrix,
         "clean_restored":True,
+        "interpretation":
+            "FQDN/service poisoning is applied to non-NRF live profiles; "
+            "Open5GS refuses external overwrite of its NRF self-profile "
+            "with HTTP 403 SELF Not allowed.",
     }
 
 
@@ -1680,8 +1715,12 @@ async def main_async(
             f"- Persistent registration poisoning rejected by policy: "
             f"{persistent_poison['independent_policy_rejected']}\n"
             f"- Live registry FQDN/service poisoning matrix: "
-            f"{registry_field_poisoning['detected']}/"
-            f"{registry_field_poisoning['cases']}\n"
+            f"{registry_field_poisoning['protected']}/"
+            f"{registry_field_poisoning['cases']} "
+            f"(applied+detected "
+            f"{registry_field_poisoning['poison_applied_and_detected']}, "
+            f"server-prevented "
+            f"{registry_field_poisoning['server_prevented']})\n"
             f"- Native article mutation variants: "
             f"{native_mutations['article_detected']}/"
             f"{native_mutations['article_cases']}\n"
