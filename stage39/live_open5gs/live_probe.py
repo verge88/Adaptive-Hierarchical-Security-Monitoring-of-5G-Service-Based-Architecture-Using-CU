@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import copy
 import hashlib
 import json
@@ -18,6 +19,8 @@ from urllib.parse import urlencode
 from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.events import DataReceived, ResponseReceived, StreamEnded, StreamReset
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from stage39_kie import FreshnessAnchor, KIERequest, KIEResponse, sha256_json
 
@@ -267,6 +270,92 @@ def validate_all_live_policy(discovery,witness,policy):
         if nrf_w.get("tcp_reachable") is not True:
             alerts.setdefault("NRF",[]).append("witness_reachability:nrf1")
     return alerts
+
+
+def canonical_bytes(value):
+    return json.dumps(
+        value,sort_keys=True,separators=(",",":"),ensure_ascii=False
+    ).encode()
+
+
+def verify_external_witness_bundle(bundle_path,public_key_path,challenge_path):
+    bundle=json.loads(bundle_path.read_text())
+    snapshot=bundle.get("snapshot")
+    signature_b64=bundle.get("signature_base64")
+    if not isinstance(snapshot,dict) or not isinstance(signature_b64,str):
+        raise RuntimeError("invalid external witness bundle")
+    public_pem=public_key_path.read_bytes()
+    public_key=serialization.load_pem_public_key(public_pem)
+    if not isinstance(public_key,ec.EllipticCurvePublicKey):
+        raise RuntimeError("external witness public key must be EC")
+    try:
+        public_key.verify(
+            base64.b64decode(signature_b64),
+            canonical_bytes(snapshot),
+            ec.ECDSA(hashes.SHA256()),
+        )
+    except Exception as exc:
+        raise RuntimeError("external witness signature invalid") from exc
+    expected_sha=hashlib.sha256(public_pem).hexdigest()
+    if snapshot.get("public_key_sha256")!=expected_sha:
+        raise RuntimeError("external witness public key digest mismatch")
+    challenge=challenge_path.read_text().strip()
+    if snapshot.get("challenge")!=challenge:
+        raise RuntimeError("external witness challenge mismatch")
+    if int(snapshot.get("stage",-1))!=39:
+        raise RuntimeError("external witness stage mismatch")
+    if snapshot.get("nrf_discovery_used") is not False:
+        raise RuntimeError("external witness unexpectedly used NRF discovery")
+    issued=int(snapshot.get("issued_at_unix_ns",0))
+    if issued<=0 or abs(time.time_ns()-issued)>120_000_000_000:
+        raise RuntimeError("external witness stale")
+    slots=snapshot.get("slots")
+    if not isinstance(slots,dict) or set(slots)!=set(PROCESSES):
+        raise RuntimeError(
+            "external witness slot set mismatch: "
+            f"{sorted(slots) if isinstance(slots,dict) else slots}"
+        )
+    normalized={}
+    for slot,row in slots.items():
+        expected_type=PROCESSES[slot][2]
+        expected_endpoint=PROCESSES[slot][3]
+        if row.get("nf_type")!=expected_type:
+            raise RuntimeError(f"external witness type mismatch {slot}")
+        if row.get("endpoint")!=expected_endpoint:
+            raise RuntimeError(f"external witness endpoint mismatch {slot}")
+        if row.get("process_alive") is not True:
+            raise RuntimeError(f"external witness dead process {slot}")
+        if row.get("direct_sbi_tcp_reachable") is not True:
+            raise RuntimeError(f"external witness unreachable endpoint {slot}")
+        normalized[slot]={
+            **row,
+            "tcp_reachable":row["direct_sbi_tcp_reachable"],
+        }
+    return normalized,{
+        "snapshot":snapshot,
+        "signature_base64":signature_b64,
+        "verified":True,
+        "public_key_sha256":expected_sha,
+    }
+
+
+def wait_external_witness(
+    bundle_path,public_key_path,challenge_path,timeout_seconds=60
+):
+    deadline=time.time()+timeout_seconds
+    last=None
+    while time.time()<deadline:
+        if bundle_path.exists():
+            try:
+                return verify_external_witness_bundle(
+                    bundle_path,public_key_path,challenge_path
+                )
+            except Exception as exc:
+                last=exc
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"external witness unavailable or invalid: {last}"
+    )
 
 def canonical_rows(rows):
     return sorted(
@@ -633,7 +722,10 @@ async def run_persistent_registration_poisoning(clean,witness,policy):
     return poison
 
 
-async def main_async(output):
+async def main_async(
+    output,external_witness=None,external_public_key=None,
+    external_challenge=None
+):
     output.mkdir(parents=True,exist_ok=True)
     LOG.mkdir(parents=True,exist_ok=True)
     WITNESS.mkdir(parents=True,exist_ok=True)
@@ -679,19 +771,29 @@ async def main_async(output):
                 f"NRF convergence failed: {last}; logs={tails}"
             )
 
-        witness={}
-        deadline=time.time()+10
-        while time.time()<deadline:
-            witness=collect_witness(processes)
-            if set(witness)==set(PROCESSES):
-                break
-            await asyncio.sleep(0.1)
-        missing=sorted(set(PROCESSES)-set(witness))
-        if missing:
-            tails={slot:log_tail(slot) for slot in missing}
-            raise RuntimeError(
-                f"missing runtime witness for {missing}; logs={tails}"
+        external_witness_evidence=None
+        if external_witness is not None:
+            if external_public_key is None or external_challenge is None:
+                raise RuntimeError(
+                    "external witness requires public key and challenge"
+                )
+            witness,external_witness_evidence=wait_external_witness(
+                external_witness,external_public_key,external_challenge
             )
+        else:
+            witness={}
+            deadline=time.time()+10
+            while time.time()<deadline:
+                witness=collect_witness(processes)
+                if set(witness)==set(PROCESSES):
+                    break
+                await asyncio.sleep(0.1)
+            missing=sorted(set(PROCESSES)-set(witness))
+            if missing:
+                tails={slot:log_tail(slot) for slot in missing}
+                raise RuntimeError(
+                    f"missing runtime witness for {missing}; logs={tails}"
+                )
 
         live_policy=load_live_policy()
         clean_policy_alerts=validate_all_live_policy(
@@ -740,6 +842,7 @@ async def main_async(output):
                 for typ,rows in clean.items()
             },
             "runtime_witness":witness,
+            "external_witness_evidence":external_witness_evidence,
             "independent_live_policy":{
                 "document":live_policy,
                 "sha256":hashlib.sha256(
@@ -810,6 +913,19 @@ async def main_async(output):
                 k:len(v) for k,v in clean.items()
             },
             "runtime_witness_records":len(witness),
+            "external_witness":{
+                "used":external_witness_evidence is not None,
+                "verified":
+                    bool(external_witness_evidence and
+                         external_witness_evidence.get("verified")),
+                "source":
+                    external_witness_evidence["snapshot"]["source"]
+                    if external_witness_evidence else
+                    "in-container-fallback",
+                "public_key_sha256":
+                    external_witness_evidence.get("public_key_sha256")
+                    if external_witness_evidence else None,
+            },
             "independent_live_policy":{
                 "sha256":policy_digest,
                 "clean_policy_alerts":clean_policy_alerts,
@@ -829,6 +945,9 @@ async def main_async(output):
             "kie_bound_to_live_evidence":True,
             "telemetry_digest":telemetry_digest,
             "limitations":[
+                "External witness runs in a separate container and keeps its "
+                "private key outside the Open5GS container, but both containers "
+                "still share one GitHub runner/kernel.",
                 "Persistent poisoning test uses an intentionally registered "
                 "test profile and removes it after validation.",
                 "NRF is controlled as a live process but is not mutated as a "
@@ -858,6 +977,9 @@ async def main_async(output):
             f"{report['registered_profile_observed']}\n"
             f"- Runtime witness records: "
             f"{report['runtime_witness_records']}\n"
+            f"- External sidecar witness used/verified: "
+            f"{report['external_witness']['used']}/"
+            f"{report['external_witness']['verified']}\n"
             f"- Independent live policy clean alerts: "
             f"{len(clean_policy_alerts)}\n"
             f"- Persistent registration poisoning rejected by policy: "
@@ -888,8 +1010,16 @@ async def main_async(output):
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--output",type=Path,required=True)
+    ap.add_argument("--external-witness",type=Path)
+    ap.add_argument("--external-witness-public-key",type=Path)
+    ap.add_argument("--external-witness-challenge",type=Path)
     args=ap.parse_args()
-    asyncio.run(main_async(args.output))
+    asyncio.run(main_async(
+        args.output,
+        args.external_witness,
+        args.external_witness_public_key,
+        args.external_witness_challenge,
+    ))
 
 
 if __name__=="__main__":
