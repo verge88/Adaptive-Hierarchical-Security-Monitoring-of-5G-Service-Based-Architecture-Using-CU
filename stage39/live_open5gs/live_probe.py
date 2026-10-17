@@ -185,10 +185,7 @@ HARNESS_NRF_UUID="39000000-0000-4000-8000-000000000039"
 
 
 def harness_nrf_profile(template):
-    keep=(
-        "nfStatus","heartBeatTimer","plmnList","sNssais",
-        "allowedPlmns","allowedNfTypes","allowedNfDomains",
-    )
+    keep=("heartBeatTimer","plmnList")
     profile={
         key:copy.deepcopy(template[key])
         for key in keep if key in template
