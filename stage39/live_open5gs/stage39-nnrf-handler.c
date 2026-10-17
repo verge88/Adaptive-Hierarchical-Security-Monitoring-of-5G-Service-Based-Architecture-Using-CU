@@ -22,6 +22,7 @@
 
 #include "sbi/openapi/external/cJSON.h"
 #include <unistd.h>
+#include <time.h>
 
 /*
  * Stage 38 research-only multi-NF NRF discovery instrumentation.
@@ -367,6 +368,8 @@ static bool stage38_lab_instrument_discovery_response(
     char *serialized = NULL;
     char *owned = NULL;
     unsigned long tick;
+    struct timespec stage39_mutation_ts;
+    double stage39_mutation_ns = 0;
     bool changed = false;
 
     if (access(STAGE38_ENABLE_PATH, F_OK) != 0 || !response ||
@@ -424,6 +427,19 @@ static bool stage38_lab_instrument_discovery_response(
         cJSON_Delete(root);
         return false;
     }
+
+    if (clock_gettime(CLOCK_MONOTONIC, &stage39_mutation_ts) != 0) {
+        ogs_error("STAGE39: clock_gettime failed");
+        cJSON_Delete(root);
+        return false;
+    }
+    stage39_mutation_ns =
+        (double)stage39_mutation_ts.tv_sec * 1000000000.0 +
+        (double)stage39_mutation_ts.tv_nsec;
+    cJSON_DeleteItemFromObjectCaseSensitive(
+        root, "stage39MutationMonotonicNs");
+    cJSON_AddNumberToObject(
+        root, "stage39MutationMonotonicNs", stage39_mutation_ns);
 
     serialized = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
