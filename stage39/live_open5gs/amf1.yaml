@@ -39,3 +39,6 @@ amf:
     full: Stage39
     short: S39
   amf_name: stage39-amf1
+  time:
+    t3512:
+      value: 540
