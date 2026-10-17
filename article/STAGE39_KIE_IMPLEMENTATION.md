@@ -1,51 +1,29 @@
-# Stage39: КИЕ, причинный потоковый контроль и расширенная live-проверка Open5GS
+# Stage39: закрытие экспериментальных границ Stage38
 
-Stage39 не изменяет замороженный корпус, решения и численные результаты Stage38. Это отдельный
-экспериментальный слой с собственными GitHub Actions, политиками и артефактами. Результаты Stage39
-нельзя механически объединять с 256 сценариями Stage38.
+Stage39 не изменяет замороженный корпус и численные результаты Stage38. Это отдельный
+воспроизводимый слой реализации и новых экспериментов GitHub Actions. Поэтому результаты
+Stage39 не суммируются с 256 сценариями Stage38 и должны цитироваться как дополнительная
+валидация.
 
-## 1. Исполняемая КИЕ
+## Итог по семи исходным пробелам
 
-`research/stage39_kie.py` реализует `KIERequest` и `KIEResponse`.
+| № | Проблема | Состояние Stage39 | Что подтверждается |
+|---|---|---|---|
+| 1 | Oracle-эталон зависел от NRF | Существенно закрыто | Отдельная full-profile policy для 9 типов / 13 слотов, ECDSA-подпись policy, отрицательный tamper-test, KIE связывает policy digest |
+| 2 | Registry poisoning / CVE-класс | Существенно закрыто | Реальная ложная регистрация в NRF, плюс live FQDN/service poisoning matrix: 18/18 защищённых случаев |
+| 3 | Ложные тревоги определялись transition-plan | Существенно закрыто | Внешний подписанный orchestrator-event source, 5000 случайных событий, causal verifier без будущего состояния, сильные lifecycle-aware baselines |
+| 4 | Узкие лабораторные условия | Существенно расширено | 13 live Open5GS процессов / 9 NF типов, 225 native mutations, 55k+ benign lifecycle events за 2 минуты, live mTLS discovery load |
+| 5 | Future state / отсутствие real-time | Существенно закрыто | Нет post-reference из будущего; три latency clocks, включая onset timestamp из отдельного sidecar-controller |
+| 6 | Witness не показывал информационного вклада | Закрыто экспериментальной абляцией | Identity: policy-only 0/36, witness-only 36/36, combined 36/36; service/FQDN наоборот зависят от policy |
+| 7 | КИЕ не была частью исполняемого Nnrf пути | Существенно закрыто | KIE request/response проходит через реальный Open5GS Nnrf discovery JSON в поле `x-stage39-kie`, MAC/freshness/binding проверяются |
 
-КИЕ-запрос содержит:
+Оставшиеся границы перечислены в конце документа. В частности, Stage39 не объявляет
+исследовательское поле `x-stage39-kie` новым стандартизованным 3GPP IE.
 
-- версию и направление;
-- идентификаторы контролирующего контура и контролируемого объекта;
-- монотонный номер цикла;
-- метку времени;
-- 128-битный nonce;
-- SHA-256 независимой политики;
-- SHA-256 телеметрии;
-- HMAC-SHA256 над каноническим сообщением.
+## 1. Независимый и подписанный oracle-policy
 
-Ответ связан с исходными `cycle` и `nonce` и содержит заверенный отчётный блок. В CI проверяются
-изменение содержимого, неправильная привязка ответа, устаревшая метка, повтор номера цикла и повтор
-nonce. Поэтому КИЕ в Stage39 является исполняемым протоколом, а не только методологическим
-описанием разделения каналов.
-
-## 2. Freshness anchor, replay и полная потеря состояния
-
-`FreshnessAnchor` хранит последний цикл и хеши nonce на диске. Повтор ранее принятой КИЕ после
-повторного открытия состояния отклоняется. HMAC-запечатанное зеркало позволяет восстановить
-primary-файл и сохранить защиту от replay.
-
-Дополнительно введён режим `must_recover=True`. Если отсутствуют и primary, и mirror,
-верификатор не создаёт новое пустое состояние, а завершает проверку безопасным отказом. Это не
-восстановление потерянного счётчика, но исключает небезопасный автоматический reset freshness state.
-
-В успешном CI:
-- replay после restart отклонён;
-- primary-loss восстановлен из sealed mirror;
-- одновременная потеря обеих копий приводит к fail-closed;
-- изменение КИЕ после вычисления MAC отклонено.
-
-## 3. Независимая полная политика
-
-`stage39/full_profile_policy.json` задаётся отдельно от наблюдений NRF и включает тип NF, адрес,
-FQDN, сервисы, версии, схему и сервисные endpoints.
-
-Политика содержит 13 логических слотов и девять типов NF:
+`stage39/full_profile_policy.json` задаёт полную разрешённую семантику независимо от
+наблюдаемого NRF discovery response. Политика содержит 13 слотов и 9 типов NF:
 
 - NSSF × 2;
 - AUSF × 2;
@@ -57,69 +35,260 @@ FQDN, сервисы, версии, схему и сервисные endpoints.
 - NRF;
 - SCP.
 
-Таким образом сохранена двухэкземплярная топология Stage38 для NSSF/AUSF/BSF/UDM и добавлены
-AMF/SMF/PCF/NRF/SCP.
+Политика включает NF type, endpoint, FQDN и service semantics. Для live Open5GS используется
+`stage39/live_open5gs/live_policy.json`.
 
-## 4. Матрица детерминированного Stage39 verifier
+В Actions политика подписывается отдельным EC private key. В Open5GS-контейнер передаются только
+public key и detached signature. `live_probe.py` проверяет подпись до использования policy и
+отдельно проверяет, что изменённый policy document с той же подписью отвергается. Digest policy
+связывается с KIE.
 
-CI-модель проверяет шесть семейств, соответствующих статье, на каждом из 13 слотов:
+Это обеспечивает независимость от NRF observation plane. При этом policy и код по-прежнему
+управляются в одном GitHub repository/workspace, поэтому организационно независимый внешний
+policy authority остаётся возможным усилением.
 
-1. замена идентичности;
-2. подмена конечной точки;
-3. инъекция сервиса;
-4. подмена FQDN;
-5. подмена типа NF;
-6. составная подмена «идентичность + сервис».
+## 2. Registry poisoning и изменение полей живого NRF
 
-Получено **78/78** обнаружений. Точная копия профиля с тем же `nfInstanceId` вынесена в
-отдельную boundary-проверку: **13/13**. Совокупно основной verifier отверг **91/91** тестовых
-отклонений.
+Stage39 выполняет два класса live registry poisoning.
 
-Run 39059372421 также прошёл **14/14 unit/boundary tests**.
+### Arbitrary registration
 
-Время вычисления локального `verifier.verify()` по 91 случаю:
+В живой NRF Open5GS регистрируется дополнительный NSSF-профиль. NRF отвечает HTTP 201, профиль
+реально становится discoverable, а число NSSF в discovery увеличивается с 2 до 3. Независимая
+policy отвергает профиль по неразрешённому endpoint. После DELETE чистое состояние
+восстанавливается.
 
-- median: **0,396061 мс**;
-- nearest-rank p95: **0,418724 мс**;
-- max: **0,496078 мс**.
+### FQDN/service poisoning существующих профилей
 
-Это только время вычисления функции после доставки данных verifier-у, а не end-to-end
-attack-to-alert latency.
+Для каждого discovery-visible типа отдельно проверяются FQDN и service-content:
 
-## 5. Причинный lifecycle без будущего post-reference
+- NSSF;
+- AUSF;
+- BSF;
+- UDM;
+- AMF;
+- SMF;
+- PCF;
+- SCP;
+- NRF.
 
-`StreamRelationalVerifier` не получает будущий снимок после перехода. Для каждого из 13 слотов
-проверены `stop`, `start` и `restart`: **39/39** причинных lifecycle-случаев прошли.
+Всего: **18/18 защищённых случаев**.
 
-Во время перехода отсутствие допускается только изменяемому слоту. Стабильные слоты должны
-оставаться корректными. При restart новый UUID принимается только при совпадении разрешённой
-семантики с независимой политикой и текущим witness.
+Для восьми внешних по отношению к NRF типов изменение реально записывается в live NRF registry,
+становится видимым через discovery и обнаруживается policy: **16/16 applied-and-detected**.
+После каждого случая профиль удаляется и регистрируется заново из сохранённого чистого состояния,
+после чего policy снова возвращает clean.
 
-Это устраняет ретроспективную зависимость правила Stage39 от заранее снятого post-reference.
-При этом live Open5GS lifecycle-эксперимент для каждого слота остаётся отдельной более сильной
-проверкой; 39/39 относится к причинному Stage39 verifier.
+Для собственного NRF self-profile Open5GS не разрешает внешний overwrite: обе попытки
+FQDN/service изменения возвращают **HTTP 403 SELF Not allowed**. Эти два случая учитываются
+отдельно как server-prevented, а не как detector-detected.
 
-## 6. Отравление эталона и реального NRF
+Таким образом live matrix различает предотвращение записи и обнаружение уже записанного
+отравления.
 
-Есть два разных уровня проверки.
+## 3. Независимый lifecycle authorization вместо скрытого transition-plan
 
-В программной модели `PersistentRegistry` для каждого из 13 слотов отдельно изменялись FQDN и
-service contents, после чего реестр повторно открывался. Независимая политика обнаружила
-**26/26** случаев.
+Добавлены:
 
-В live Open5GS выполнена реальная регистрация дополнительного подложного NSSF-профиля в NRF:
-HTTP status **201**, после чего discovery вернул три NSSF-профиля вместо двух. Независимая live-policy
-отклонила профиль по неразрешённой конечной точке `203.0.113.250`. Затем профиль был удалён
-(status **204**), и чистое состояние восстановилось.
+- `research/stage39_external_scenarios.py`;
+- `research/stage39_orchestration_eval.py`.
 
-Этот live-тест демонстрирует persistent registration poisoning реального NRF, но пока использует
-один специально зарегистрированный NSSF-профиль, а не полный набор персистентных подмен для всех
-типов.
+Отдельный generator process создаёт lifecycle intent со следующими полями:
 
-## 7. Живой Open5GS v2.7.6: девять типов NF
+- source ID;
+- monotonic sequence;
+- event ID;
+- timestamp;
+- nonce;
+- stop/start/restart;
+- target slot;
+- policy SHA-256;
+- допустимое transition window.
 
-`.github/workflows/stage39-live-open5gs.yml` собирает Open5GS v2.7.6 и реально запускает
-**13 процессов**:
+Событие HMAC-подписывается ключом orchestrator. Verifier проверяет MAC, policy binding,
+freshness, sequence и nonce. Tampered event и replay отвергаются.
+
+Labels атаки хранятся отдельно и не передаются detector API; они соединяются с решениями только
+при расчёте метрик. Генератор мутаций реализован отдельно от `stage39_kie.mutate` и использует
+отдельные случайные mutation tokens.
+
+В одном blind-like CI прогоне обрабатывается 5000 событий. Типичный подтверждённый run содержит
+около 1.4–1.5 тыс. атак и 3.5 тыс. benign events. Для `relational_signed_event` получено
+TP=all attacks, FN=0, FP=0.
+
+### Сильные baselines
+
+Одновременно сравниваются:
+
+- count/status;
+- strict pre-snapshot;
+- full pre-or-post snapshot;
+- lifecycle-aware full policy без witness;
+- lifecycle-aware full policy + witness;
+- relational signed-event rule.
+
+Ключевой научный результат этого сравнения: **равно выразительный lifecycle-aware full-policy
+baseline также достигает recall 1.0 и FPR 0** в этом генераторе. Поэтому Stage39 не утверждает,
+что слово «relational» само по себе даёт уникальное преимущество. Эксперимент показывает вклад
+явной lifecycle authorization semantics, независимой policy и witness/provenance decomposition.
+
+Strict snapshot и full pre/post при этом дают большое число FP на разрешённых переходах, а
+count/status дополнительно пропускает часть атак.
+
+## 4. Benign churn и более широкий workload
+
+Создан `.github/workflows/stage39-churn.yml`.
+
+PR validation выполняет 2 минуты wall-clock benign lifecycle churn. Подтверждённый run обработал
+**55 500 подписанных lifecycle events** за 121.8 секунды:
+
+- restart: 31 198;
+- stop: 12 180;
+- start: 12 122;
+- false alerts: 0.
+
+Каждый batch создаётся отдельным generator process с новым случайным seed. Future post-reference
+не используется.
+
+Workflow также поддерживает ручную длительность 1–360 минут, а scheduled run настроен на
+**120 минут**. Наличие двухчасового workflow не должно цитироваться как двухчасовой
+эксперимент, пока конкретный scheduled/manual run фактически не завершён.
+
+Отдельно live Open5GS mTLS probe выполняет **300 параллелизованных discovery requests**
+(concurrency 20) с новым TLS+h2 соединением на запрос. Подтверждено 0 transport/application
+errors. Эта нагрузка проверяет SBI control plane, но не заменяет реальный UE registration/PDU
+traffic.
+
+## 5. Потоковый режим и измерение задержки
+
+`StreamRelationalVerifier` не получает будущий post-reference. В causal CI выполнены
+**39/39** случаев stop/start/restart для 13 слотов.
+
+Для live native matrix используются три разных latency definition.
+
+### Discovery request → alert
+
+От начала локального discovery request до результата combined detector:
+
+- sample count: 225;
+- median примерно 1.14 ms;
+- p95 примерно 1.35 ms;
+- max менее 2 ms в подтверждённом run.
+
+### NRF mutation hook → alert
+
+Timestamp записывается `CLOCK_MONOTONIC` непосредственно после изменения response внутри NRF:
+
+- sample count: 225;
+- median примерно 0.62 ms;
+- p95 примерно 0.74 ms;
+- max менее 1 ms в подтверждённом run.
+
+### External sidecar controller onset → alert
+
+Отдельный container `external_attack_driver.py` ставит `CLOCK_MONOTONIC` timestamp
+непосредственно перед передачей команды на конкретную live mutation. Core отвечает ack только
+после detector decision:
+
+- 225/225 команд подтверждены;
+- median примерно **2.34 ms**;
+- p95 примерно **3.28 ms**;
+- max примерно **3.63 ms**.
+
+Эта третья метрика включает межконтейнерный handoff, discovery, mutation в NRF и detector.
+Она намного ближе к end-to-end laboratory latency, но timestamp всё ещё принадлежит
+контролируемому атакующему sidecar, а не произвольному внешнему злоумышленнику в реальной сети.
+
+## 6. Формальная witness-ablation
+
+Witness выполняется отдельным контейнером. Его private signing key не монтируется в контейнер
+Open5GS. Источник:
+
+`separate-container:/proc + direct-SBI + runtime-UUID-record`.
+
+В live run собрано и проверено **13/13 runtime witness records**.
+
+Для всех 225 native mutation cases вычисляются три решения:
+
+- policy-only;
+- witness-only;
+- combined.
+
+Получена следующая абляция:
+
+| Семейство | cases | policy-only | witness-only | combined |
+|---|---:|---:|---:|---:|
+| identity replacement | 36 | **0** | **36** | 36 |
+| endpoint substitution | 36 | 36 | 36 | 36 |
+| service injection | 36 | 36 | **0** | 36 |
+| FQDN substitution | 36 | 36 | **0** | 36 |
+| NF-type substitution | 36 | 36 | 36 | 36 |
+| identity + service | 36 | 36 | 36 | 36 |
+| duplicate profile | 9 | 9 | 9 | 9 |
+
+Это прямо показывает информационную комплементарность: UUID identity не выводится из независимой
+full-profile policy и требует witness, тогда как FQDN/service semantics не выводятся из runtime
+witness и требуют policy.
+
+При наличии отдельно доверенного точного pre-snapshot часть identity-атак, конечно, можно
+обнаружить и сравнением snapshot. Поэтому вклад witness относится прежде всего к независимому
+provenance channel, а не к математической невозможности иных детекторов.
+
+Оба контейнера остаются на одном GitHub runner/kernel; физически независимый host/TPM/TEE
+эксперимент не заявляется.
+
+## 7. Исполняемая КИЕ и перенос через Nnrf SBI
+
+В `research/stage39_kie.py` реализованы:
+
+- `KIE_REQUEST`;
+- `KIE_RESPONSE`;
+- controller/subject IDs;
+- monotonic cycle;
+- timestamp;
+- 128-bit nonce;
+- policy digest;
+- telemetry digest;
+- HMAC-SHA256;
+- persistent freshness anchor;
+- sealed recovery mirror.
+
+Проверяются tamper, stale message, replay cycle, replay nonce, response/request binding,
+replay после restart, восстановление primary state и fail-closed при полной потере primary+mirror.
+
+Дополнительно Stage39 теперь переносит реальную KIE request/response pair через **живой
+Open5GS Nnrf discovery response**.
+
+Патч `stage39/live_open5gs/stage39-nnrf-handler.c` добавляет top-level vendor field:
+
+`x-stage39-kie`
+
+в сериализованный Nnrf discovery JSON. В поле передаются KIE request, MAC и связанный
+KIE response с отдельным MAC. Live probe затем:
+
+1. получает обычный Nnrf discovery response по HTTP/2;
+2. извлекает `x-stage39-kie`;
+3. проверяет request HMAC;
+4. проверяет freshness/cycle/nonce;
+5. проверяет policy/telemetry binding;
+6. проверяет response HMAC;
+7. проверяет связь response с тем же request через cycle/nonce;
+8. удаляет extension source и убеждается, что последующий clean response поля не содержит.
+
+В подтверждённом live run:
+
+- request verified: true;
+- response verified: true;
+- request/response cycle+nonce binding: true;
+- extension removed cleanly: true.
+
+Это реальная интеграция в Nnrf SBI serialization path Open5GS, но **vendor extension является
+исследовательским механизмом и не объявляется стандартизованным 3GPP IE**. Основной out-of-band
+KIE path сохраняется как отдельный control/provenance channel.
+
+## 8. Live Open5GS coverage
+
+Live workflow поднимает Open5GS v2.7.6:
 
 - NRF;
 - SCP;
@@ -131,163 +300,63 @@ HTTP status **201**, после чего discovery вернул три NSSF-пр
 - SMF;
 - PCF.
 
-В run **39059372431** discovery подтвердил ожидаемый состав:
+Итого **13 процессов / 9 типов NF**.
 
-- NSSF 2/2;
-- AUSF 2/2;
-- BSF 2/2;
-- UDM 2/2;
-- AMF 1/1;
-- SMF 1/1;
-- PCF 1/1;
-- SCP 1/1;
-- NRF 1/1.
+NRF discovery counts совпадают с ожидаемыми. Для шести семейств статьи и четырёх вариантов:
 
-NRF участвует через собственный live self-profile, возвращаемый discovery.
+`9 NF types × 6 families × 4 variants = 216`.
 
-## 8. Отдельный подписанный live witness
+Дополнительно 9 duplicate-profile cases. Итог: **225/225 native mutations обнаружены**,
+а marker count внутри нативного NRF response hook также равен 225.
 
-Live workflow запускает witness в отдельном контейнере с отдельным закрытым ключом. Он читает
-runtime UUID-записи, наблюдает `/proc`, проверяет прямую TCP-доступность SBI и подписывает снимок.
-В основном контейнере подпись проверяется до использования данных.
+## 9. Live Open5GS mTLS
 
-Получено **13/13 runtime witness records**, подпись отдельного witness успешно проверена. Закрытый
-ключ witness не передаётся в контейнер Open5GS.
+Отдельный pass поднимает те же NF с TLS SBI configuration. Подтверждено:
 
-Граница независимости всё ещё не физическая: оба контейнера работают на одном GitHub-hosted runner
-и используют одно ядро ОС. Поэтому результат сильнее общей process/container boundary Stage38, но
-не является аппаратной или физически независимой аттестацией.
+- TLS 1.3;
+- клиент без сертификата отклонён;
+- authenticated Nnrf discovery успешен;
+- ожидаемые discovery counts сохранены.
 
-## 9. Native NRF mutation matrix
+CI PKI упрощена: один короткоживущий сертификат с SAN для loopback endpoints используется
+всеми NF. Это mTLS enforcement experiment, но не production per-NF PKI и не conformance
+certification.
 
-В `stage39/live_open5gs/stage39-nnrf-handler.c` мутация выполняется внутри нативного обработчика
-ответа NRF discovery непосредственно перед отправкой. Внутреннее состояние NRF при этих
-response-mutation тестах не изменяется.
+OAuth2 client-credentials продолжает проверяться в отдельном transport probe. Для Open5GS
+v2.7.6 в данном стенде не обнаружен используемый NRF OAuth2 token-handler, поэтому этот тест
+не называется native Open5GS OAuth2.
 
-Для каждого из **9 типов NF** выполнены все шесть семейств статьи и четыре варианта каждого
-семейства:
+SEPP-like envelope также остаётся property test, а не N32/SEPP conformance.
 
-`9 типов × 6 семейств × 4 варианта = 216` случаев.
+## 10. Reproducibility boundaries
 
-Дополнительно для каждого типа выполнена нативная точная duplicate-profile подмена:
-**9/9** случаев.
+GitHub Actions сохраняет отдельные artifacts:
 
-Итого live native matrix: **225/225 обнаружений**, marker count внутри NRF: **225**.
-После отключения hook чистые discovery-ответы для всех девяти типов восстановились и снова
-удовлетворяли независимой live-policy.
+- `stage39-kie-streaming-evidence`;
+- `stage39-soak-evidence`;
+- `stage39-churn-evidence`;
+- `stage39-live-open5gs-evidence`.
 
-## 10. Время live обнаружения
+Каждый artifact получает SHA-256 digest от GitHub Actions. Frozen Stage38 artifacts не
+перезаписываются.
 
-Для 225 нативных случаев сохранены две разные величины.
+## 11. Что остаётся открытым
 
-От начала локального discovery-запроса до результата независимой policy-проверки:
+После Stage39 исходные семь замечаний существенно сокращены, но не все превращены в
+production-grade доказательство. Остаются:
 
-- median: **1,039271 мс**;
-- nearest-rank p95: **1,369147 мс**;
-- max: **1,647506 мс**.
+- policy authority логически отделена от NRF, но не вынесена в отдельную организацию/HSM;
+- witness sidecar и Open5GS используют один GitHub runner/kernel;
+- completed PR churn сейчас 2 минуты; двухчасовой scheduled workflow реализован, но
+  многочасовой результат следует заявлять только после фактического завершённого run;
+- SBI load не является настоящей UE registration/PDU-session нагрузкой;
+- external-controller onset является лабораторным attacker trigger, а не timestamp
+  неконтролируемого удалённого нарушителя;
+- `x-stage39-kie` — vendor extension, не стандартизованный 3GPP IE;
+- native Open5GS OAuth2 authorization flow не подтверждён;
+- N32/SEPP interoperability/conformance не выполнялся;
+- нет TPM/TEE/remote-attestation измерения executable/container image;
+- нет multi-vendor core validation.
 
-От `CLOCK_MONOTONIC`-метки, записанной непосредственно в NRF после применения мутации ответа,
-до результата policy-проверки:
-
-- median: **0,548229 мс**;
-- nearest-rank p95: **0,755136 мс**;
-- max: **1,183257 мс**.
-
-Вторая величина ближе к «mutation-to-alert», но начало измерения всё ещё задаётся исследовательской
-вставкой внутри NRF. Это не timestamp внешнего злоумышленника и не полная производственная
-end-to-end задержка.
-
-## 11. Live Open5GS mTLS
-
-В том же run 39059372431 выполнен второй live-проход с реальным TLS-конфигом Open5GS SBI.
-
-Для всех 13 процессов включены HTTPS, доверенный тестовый CA, клиентский сертификат и
-`verify_client: true`. Все девять типов снова зарегистрировались/обнаружились в ожидаемом количестве.
-
-Проверка без клиентского сертификата была отклонена, а аутентифицированный HTTP/2 discovery
-успешно выполнен. Зафиксированы:
-
-- TLS version: **TLSv1.3**;
-- cipher: **TLS_AES_256_GCM_SHA384**;
-- `probe_without_client_certificate_rejected = true`;
-- `authenticated_discovery_succeeded = true`.
-
-Это уже реальный mTLS на Open5GS SBI в CI, но PKI упрощена: все NF используют один краткоживущий
-сертификат с SAN для тестовых loopback endpoints. Раздельные NF identities, lifecycle сертификатов,
-revocation и промышленная PKI не проверялись.
-
-## 12. OAuth2 и SEPP
-
-`research/stage39_transport_probe.py` отдельно проверяет client-credentials flow: неправильный
-client secret и неправильный bearer отклоняются, валидный token выдаётся и принимается только
-вместе с mTLS.
-
-Это тестовый OAuth2-compatible transport probe, а не встроенный OAuth2 сервер Open5GS v2.7.6.
-При проверке runtime-исходников `src/nrf/` фиксированной версии v2.7.6 отдельный обработчик NRF
-OAuth2 token endpoint не найден, поэтому статья не должна называть этот тест native Open5GS OAuth2.
-
-SEPP-like envelope связывает source/destination PLMN, nonce и digest payload с MAC и отклоняет
-изменение payload или destination. Он проверяет требуемое свойство граничной целостности, но не
-является реализацией N32 и не заменяет 3GPP SEPP interoperability/conformance test.
-
-## 13. Clean soak
-
-Основной CI содержит 10-секундный clean soak. Отдельный
-`.github/workflows/stage39-soak.yml` выполняет 1-минутный PR soak, поддерживает ручную
-длительность 1–360 минут и 30-минутный запуск по расписанию.
-
-В run **39059372451**:
-
-- длительность: **60 секунд**;
-- clean iterations: **11 287**;
-- false alerts: **0**.
-
-Это уже явно дольше исходного участка Stage38, но не является многочасовым или многосуточным soak.
-Такие утверждения допустимы только после фактического выполнения соответствующего длительного run.
-
-## 14. Воспроизводимые артефакты
-
-### KIE / streaming
-
-Run: **39059372421**
-
-Artifact: `stage39-kie-streaming-evidence`  
-Artifact ID: **12111200270**  
-SHA-256: `81301fc50c16dc1415d6bcac4f1ebc0361585c92990be00bc25b285bec175120`
-
-### 60-second soak
-
-Run: **39059372451**
-
-Artifact: `stage39-soak-evidence`  
-Artifact ID: **12111120707**  
-SHA-256: `911ea696d45ae72285e9fcd574e83da458cf59dc8063d1c2b12cbb06242d3e66`
-
-### Live Open5GS + native mutations + mTLS
-
-Run: **39059372431**
-
-Artifact: `stage39-live-open5gs-evidence`  
-Artifact ID: **12111275165**  
-SHA-256: `07f05f7dc031ed51b0488250c0cca5bf869511898d6f783606eed793024cec0d`
-
-## 15. Что теперь подтверждено и что остаётся границей
-
-Stage39 воспроизводимо подтверждает исполняемую КИЕ, anti-replay, fail-closed при полной потере
-freshness state, независимую политику, причинное transition-rule без будущего post-reference,
-девять live NF-типов, 225 нативных response-mutation проверок, отдельный подписанный witness,
-реальную persistent NRF registration poisoning, реальный Open5GS SBI mTLS и 60-секундный clean soak.
-
-Остаются отдельными более сильными задачами:
-
-- физически/аппаратно независимая аттестация witness и policy;
-- полноценный native OAuth2 authorization flow внутри выбранной реализации 5G Core;
-- настоящий N32/SEPP interoperability/conformance эксперимент;
-- end-to-end latency с внешним attacker-onset timestamp до сформированной тревоги;
-- многочасовой/многосуточный soak;
-- live причинные stop/start/restart испытания для каждого NF, а не только причинная модель verifier;
-- расширение persistent registration poisoning с одного живого NSSF-примера на полную матрицу NF.
-
-Поэтому Stage39 существенно сокращает исходные экспериментальные ограничения, но сохраняет
-явное разделение между доказанным в CI, live Open5GS smoke/attack validation и тем, что требует
-отдельной промышленной или conformance-инфраструктуры.
+Эти границы должны сохраняться в статье, чтобы Stage39 усиливал практическую и теоретическую
+значимость работы без расширения выводов за фактически выполненный эксперимент.
