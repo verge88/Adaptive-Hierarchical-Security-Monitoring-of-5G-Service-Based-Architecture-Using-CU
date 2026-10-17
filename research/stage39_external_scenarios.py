@@ -98,11 +98,15 @@ def main():
         if attacked and target is None:
             attacked=False
             family=None
+        mutation_token=hashlib.sha256(
+            f"mutation:{args.seed}:{sequence}".encode()
+        ).hexdigest()[:20]
         label_lines.append(json.dumps({
             "sequence":sequence,
             "attacked":attacked,
             "family":family,
             "target_slot":target,
+            "mutation_token":mutation_token,
         },sort_keys=True))
 
         if operation=="stop":
