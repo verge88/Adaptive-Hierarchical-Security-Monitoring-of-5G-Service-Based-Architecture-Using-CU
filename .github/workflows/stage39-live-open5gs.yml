@@ -1,0 +1,67 @@
+name: Stage39 live Open5GS nine-type coverage
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage39-live-open5gs.yml'
+      - 'stage39/live_open5gs/**'
+      - 'stage39/full_profile_policy.json'
+      - 'research/stage39_kie.py'
+      - 'stage38/patch_sbi_context.py'
+      - 'live/stage38-nnrf-handler.c'
+      - 'stage38/external_testbed/*.yaml'
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: stage39-live-open5gs-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-open5gs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MongoDB for live PCF
+        run: |
+          set -euo pipefail
+          docker run -d --name stage39-mongo --network host mongo:7 \
+            --bind_ip 127.0.0.1 --port 27017
+          for attempt in $(seq 1 60); do
+            if docker exec stage39-mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs stage39-mongo
+          exit 1
+
+      - name: Build Open5GS v2.7.6 Stage39 image
+        run: docker build -f stage39/live_open5gs/Dockerfile -t stage39-live-open5gs .
+
+      - name: Run thirteen-process live Open5GS probe
+        run: |
+          set -euo pipefail
+          mkdir -p stage39_live_out
+          docker run --rm --network host --privileged \
+            -v "$PWD/stage39_live_out:/out" \
+            stage39-live-open5gs
+          cat stage39_live_out/live_open5gs_report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: MongoDB diagnostics
+        if: failure()
+        run: docker logs stage39-mongo || true
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f stage39-mongo >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage39-live-open5gs-evidence
+          path: stage39_live_out/
+          if-no-files-found: warn
+          retention-days: 90
