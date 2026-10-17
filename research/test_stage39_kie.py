@@ -114,6 +114,19 @@ class Stage39Tests(unittest.TestCase):
             with self.assertRaises(SecurityError):
                 recovered.check_and_commit("v","nssf1",1,"55"*16,now,now)
 
+    def test_total_freshness_state_loss_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            td=Path(td)
+            primary,mirror=td/"primary.json",td/"mirror.json"
+            seal=hashlib.sha256(b"seal").digest()
+            now=int(time.time()*1000)
+            a=FreshnessAnchor(primary,mirror,seal)
+            a.check_and_commit("v","nssf1",1,"66"*16,now,now)
+            primary.unlink()
+            mirror.unlink()
+            with self.assertRaises(SecurityError):
+                FreshnessAnchor(primary,mirror,seal,must_recover=True)
+
     def test_kie_tamper_stale_and_replay_are_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             key=hashlib.sha256(b"controller").digest()
