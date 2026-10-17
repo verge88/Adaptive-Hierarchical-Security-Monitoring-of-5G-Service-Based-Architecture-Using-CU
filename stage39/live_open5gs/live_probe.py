@@ -564,22 +564,28 @@ async def clean_discovery_snapshot(expected=None):
 
 async def run_native_mutations(clean,witness,policy):
     write_mutation_plan()
+    cases=mutation_cases()
     matrix={}
     request_latencies=[]
     mutation_latencies=[]
+    article_detected=0
+    boundary_detected=0
     try:
         for typ in EXPECTED_DISCOVERY:
             slot,_=MUTATION_TARGET_SLOT[typ]
             endpoint=PROCESSES[slot][3]
             matrix[typ]={}
-            for kind in MUTATION_KINDS:
+            for case in cases:
+                kind=case["kind"]
+                variant=case["variant"]
+                label=f"{kind}:v{variant}"
                 started=time.perf_counter_ns()
                 doc=await discover_document(typ)
                 rows=doc["nfInstances"]
                 changed=discovery_digest(rows)!=discovery_digest(clean[typ])
                 if not changed:
                     raise RuntimeError(
-                        f"native mutation not observed: {typ}/{kind}"
+                        f"native mutation not observed: {typ}/{label}"
                     )
                 validate_family_change(kind,clean[typ],rows,endpoint)
                 policy_alerts=live_policy_alerts(
@@ -587,28 +593,35 @@ async def run_native_mutations(clean,witness,policy):
                 )
                 if not policy_alerts:
                     raise RuntimeError(
-                        f"independent live policy missed {typ}/{kind}"
+                        f"independent live policy missed {typ}/{label}"
                     )
                 detected_ns=time.monotonic_ns()
                 elapsed=(time.perf_counter_ns()-started)/1_000_000
                 mutation_ns=doc.get("stage39MutationMonotonicNs")
                 if not isinstance(mutation_ns,(int,float)):
                     raise RuntimeError(
-                        f"missing mutation timestamp: {typ}/{kind}"
+                        f"missing mutation timestamp: {typ}/{label}"
                     )
                 mutation_to_detection=(
                     detected_ns-int(mutation_ns)
                 )/1_000_000
                 if mutation_to_detection < 0:
                     raise RuntimeError(
-                        f"negative mutation latency: {typ}/{kind}"
+                        f"negative mutation latency: {typ}/{label}"
                     )
-                matrix[typ][kind]={
+                matrix[typ][label]={
                     "detected":True,
+                    "kind":kind,
+                    "variant":variant,
+                    "article_family":case["article_family"],
                     "policy_alerts":policy_alerts,
                     "discovery_request_to_detection_ms":elapsed,
                     "mutation_to_detection_ms":mutation_to_detection,
                 }
+                if case["article_family"]:
+                    article_detected+=1
+                else:
+                    boundary_detected+=1
                 request_latencies.append(elapsed)
                 mutation_latencies.append(mutation_to_detection)
     finally:
@@ -633,17 +646,39 @@ async def run_native_mutations(clean,witness,policy):
     nrf_log=LOG/"nrf.log"
     text=nrf_log.read_text(errors="replace") if nrf_log.exists() else ""
     marker_count=text.count("STAGE39_NATIVE_NRF_MULTI_NF_MUTATION")
-    expected=len(EXPECTED_DISCOVERY)*len(MUTATION_KINDS)
+    article_cases=(
+        len(EXPECTED_DISCOVERY)*len(MUTATION_KINDS)*4
+    )
+    boundary_cases=(
+        len(EXPECTED_DISCOVERY)*len(BOUNDARY_MUTATION_KINDS)
+    )
+    expected=article_cases+boundary_cases
     if marker_count!=expected:
         raise RuntimeError(
             f"native mutation marker mismatch {marker_count} != {expected}"
+        )
+    if article_detected!=article_cases:
+        raise RuntimeError(
+            f"native article mutation coverage "
+            f"{article_detected} != {article_cases}"
+        )
+    if boundary_detected!=boundary_cases:
+        raise RuntimeError(
+            f"native boundary mutation coverage "
+            f"{boundary_detected} != {boundary_cases}"
         )
 
     return {
         "cases":expected,
         "detected":expected,
+        "article_cases":article_cases,
+        "article_detected":article_detected,
+        "boundary_cases":boundary_cases,
+        "boundary_detected":boundary_detected,
         "types":list(EXPECTED_DISCOVERY),
-        "families":list(MUTATION_KINDS),
+        "article_families":list(MUTATION_KINDS),
+        "boundary_families":list(BOUNDARY_MUTATION_KINDS),
+        "variants_per_article_family":4,
         "matrix":matrix,
         "clean_restored_after_hook":restored_equal,
         "restored_policy_alerts":restored_policy_alerts,
@@ -979,8 +1014,17 @@ async def main_async(
             "native_mutations":{
                 "cases":native_mutations["cases"],
                 "detected":native_mutations["detected"],
+                "article_cases":native_mutations["article_cases"],
+                "article_detected":native_mutations["article_detected"],
+                "boundary_cases":native_mutations["boundary_cases"],
+                "boundary_detected":native_mutations["boundary_detected"],
                 "types":native_mutations["types"],
-                "families":native_mutations["families"],
+                "article_families":
+                    native_mutations["article_families"],
+                "boundary_families":
+                    native_mutations["boundary_families"],
+                "variants_per_article_family":
+                    native_mutations["variants_per_article_family"],
                 "native_marker_count":
                     native_mutations["native_marker_count"],
                 "clean_restored_after_hook":
@@ -1030,7 +1074,13 @@ async def main_async(
             f"{len(clean_policy_alerts)}\n"
             f"- Persistent registration poisoning rejected by policy: "
             f"{persistent_poison['independent_policy_rejected']}\n"
-            f"- Native response mutations: "
+            f"- Native article mutation variants: "
+            f"{native_mutations['article_detected']}/"
+            f"{native_mutations['article_cases']}\n"
+            f"- Native duplicate boundary cases: "
+            f"{native_mutations['boundary_detected']}/"
+            f"{native_mutations['boundary_cases']}\n"
+            f"- Native total response mutations: "
             f"{native_mutations['detected']}/{native_mutations['cases']}\n"
             f"- Mutation marker count: "
             f"{native_mutations['native_marker_count']}\n"
