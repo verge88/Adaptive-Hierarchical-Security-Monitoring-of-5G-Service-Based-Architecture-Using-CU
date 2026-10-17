@@ -58,7 +58,7 @@ def main():
 
     for sequence in range(1,args.count+1):
         inactive=sorted(set(slots)-active)
-        if inactive and rng.random()<0.38:
+        if inactive and (not active or rng.random()<0.38):
             operation="start"
             slot=rng.choice(inactive)
         else:
