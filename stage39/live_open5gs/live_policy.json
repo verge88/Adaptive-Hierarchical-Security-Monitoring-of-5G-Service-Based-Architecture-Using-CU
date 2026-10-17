@@ -6,7 +6,10 @@
       "nf_type": "NRF",
       "endpoint": "127.0.0.10",
       "fqdn": "",
-      "service_names": []
+      "service_names": [
+        "nnrf-disc",
+        "nnrf-nfm"
+      ]
     },
     "scp1": {
       "nf_type": "SCP",
