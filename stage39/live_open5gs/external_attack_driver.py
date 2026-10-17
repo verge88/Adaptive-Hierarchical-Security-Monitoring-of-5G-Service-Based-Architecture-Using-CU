@@ -52,6 +52,26 @@ def wait_for_ack(path,sequence,timeout):
     )
 
 
+
+def wait_for_ready(path,timeout):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        if path.exists():
+            try:
+                doc=json.loads(path.read_text(encoding="utf-8"))
+                last=doc
+                if (
+                    doc.get("schema")=="stage39-live-mutation-ready-v1"
+                    and int(doc.get("cases",0))==len(cases())
+                ):
+                    return doc
+            except Exception as exc:
+                last={"error":f"{type(exc).__name__}: {exc}"}
+        time.sleep(0.01)
+    raise RuntimeError(f"timeout waiting for live mutation readiness: {last}")
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--control-dir",type=Path,required=True)
@@ -60,8 +80,10 @@ def main():
     args.control_dir.mkdir(parents=True,exist_ok=True)
     command=args.control_dir/"command.json"
     ack=args.control_dir/"ack.json"
+    ready=args.control_dir/"ready.json"
     command.unlink(missing_ok=True)
     ack.unlink(missing_ok=True)
+    wait_for_ready(ready,args.timeout_seconds)
 
     results=[]
     for sequence,(typ,kind,variant,article_family) in enumerate(cases(),1):
