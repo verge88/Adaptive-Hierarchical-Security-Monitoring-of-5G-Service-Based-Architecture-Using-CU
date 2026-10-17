@@ -8,7 +8,8 @@ on:
       - 'research/**'
       - 'live_tests/**'
       - 'live/**'
-      - '!research/stage39_*.py'  workflow_dispatch:
+      - '!research/stage39_*.py'
+  workflow_dispatch:
 
 permissions:
   contents: read
