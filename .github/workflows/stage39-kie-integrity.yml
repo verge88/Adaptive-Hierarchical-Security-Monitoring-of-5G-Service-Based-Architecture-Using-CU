@@ -25,6 +25,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: stage39-kie-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   kie-streaming:
     runs-on: ubuntu-24.04

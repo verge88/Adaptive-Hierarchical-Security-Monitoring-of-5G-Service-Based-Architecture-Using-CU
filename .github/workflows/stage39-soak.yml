@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: stage39-soak-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   soak:
     runs-on: ubuntu-24.04

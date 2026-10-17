@@ -4,12 +4,11 @@ on:
   push:
     branches: [main, 'experiment/**']
   pull_request:
-    paths-ignore:
-      - 'stage39/**'
-      - 'research/stage39_*.py'
-      - 'article/STAGE39_*.md'
-      - '.github/workflows/stage39-*.yml'
-  workflow_dispatch:
+    paths:
+      - 'research/**'
+      - 'stage4_tests/**'
+      - 'live/**'
+      - '!research/stage39_*.py'  workflow_dispatch:
 
 permissions:
   contents: read
