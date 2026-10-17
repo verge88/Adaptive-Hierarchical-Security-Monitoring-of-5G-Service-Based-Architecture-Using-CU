@@ -360,6 +360,24 @@ static bool stage38_compound_identity_service(
     return stage38_service_injection(instances, tick, parameter);
 }
 
+static bool stage39_duplicate_profile(
+        cJSON *instances, unsigned long tick, int parameter)
+{
+    int slot = stage38_slot_code(parameter);
+    cJSON *profile = stage38_profile_by_slot(instances, slot);
+    cJSON *duplicate = NULL;
+
+    (void)tick;
+    if (!profile)
+        return false;
+
+    duplicate = cJSON_Duplicate(profile, true);
+    if (!duplicate)
+        return false;
+    cJSON_AddItemToArray(instances, duplicate);
+    return true;
+}
+
 static bool stage38_lab_instrument_discovery_response(
         ogs_sbi_response_t *response, OpenAPI_nf_type_e target_nf_type)
 {
@@ -417,6 +435,9 @@ static bool stage38_lab_instrument_discovery_response(
             instances, tick, entry->parameter);
     } else if (!strcmp(entry->kind, "compound_identity_service")) {
         changed = stage38_compound_identity_service(
+            instances, tick, entry->parameter);
+    } else if (!strcmp(entry->kind, "duplicate_profile")) {
+        changed = stage39_duplicate_profile(
             instances, tick, entry->parameter);
     } else {
         ogs_error("STAGE38: unknown plan kind [%s]", entry->kind);
