@@ -62,7 +62,9 @@ def prepare_pki():
         "-keyout",str(TLS_ROOT/"core.key"),
         "-out",str(TLS_ROOT/"core.csr"),
     ])
-    sans=",".join(f"IP:127.0.0.{i}" for i in range(10,23))
+    ip_sans=[f"IP:127.0.0.{i}" for i in range(10,23)]
+    dns_sans=[f"DNS:{slot}.stage39.test" for slot in PROCESSES]
+    sans=",".join(ip_sans+dns_sans)
     ext=TLS_ROOT/"core.ext"
     ext.write_text(
         "basicConstraints=CA:FALSE\n"
@@ -98,12 +100,28 @@ def tls_block():
 
 def prepare_configs():
     CONFIG_ROOT.mkdir(parents=True,exist_ok=True)
+    host_lines=[]
+    for slot,(_,_,_,endpoint) in PROCESSES.items():
+        host_lines.append(f"{endpoint} {slot}.stage39.test")
+    with Path("/etc/hosts").open("a") as hosts:
+        hosts.write("\n# Stage39 Open5GS mTLS FQDNs\n")
+        hosts.write("\n".join(host_lines)+"\n")
+
+    endpoint_names={
+        endpoint:f"{slot}.stage39.test"
+        for slot,(_,_,_,endpoint) in PROCESSES.items()
+    }
     for _,config,_,_ in PROCESSES.values():
         source=ROOT/config
         text=source.read_text()
         text=text.replace("http://","https://")
         text=text.replace("port: 80","port: 443")
         text=text.replace(":80",":443")
+        for endpoint,name in endpoint_names.items():
+            text=text.replace(
+                f"https://{endpoint}:443",
+                f"https://{name}:443",
+            )
         (CONFIG_ROOT/config).write_text(tls_block()+text)
 
 
