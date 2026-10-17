@@ -46,9 +46,9 @@ class Stage39Tests(unittest.TestCase):
     def test_clean_profiles_are_accepted(self):
         self.assertEqual([],self.verifier.verify(self.profiles,self.witnesses))
 
-    def test_six_profile_mutations_are_detected_on_every_slot(self):
+    def test_article_mutations_and_duplicate_boundary_are_detected_on_every_slot(self):
         for slot in sorted(self.policy.slots):
-            for kind in ("identity","endpoint","service","fqdn","type","duplicate"):
+            for kind in ("identity","endpoint","service","fqdn","type","compound","duplicate"):
                 with self.subTest(slot=slot,kind=kind):
                     self.assertTrue(
                         StreamRelationalVerifier(self.policy).verify(
@@ -159,8 +159,8 @@ class Stage39Tests(unittest.TestCase):
             response.verify(subject_key,wrong,now)
 
     def test_p95_uses_nearest_rank_on_nontrivial_sample(self):
-        values=list(range(1,79))
-        self.assertEqual(75,nearest_rank(values,0.95))
+        values=list(range(1,92))
+        self.assertEqual(87,nearest_rank(values,0.95))
 
 
 if __name__ == "__main__":
