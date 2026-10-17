@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import statistics
@@ -356,50 +357,109 @@ def mutate(profiles,slot,kind):
     return out
 
 
+def nearest_rank(values, probability):
+    if not values:
+        raise ValueError("empty sample")
+    ordered=sorted(values)
+    rank=max(1,math.ceil(probability*len(ordered)))
+    return ordered[rank-1]
+
+
+def lifecycle_case(policy,profiles,witnesses,slot):
+    results={}
+
+    verifier=StreamRelationalVerifier(policy)
+    verifier.begin_transition("stop",slot)
+    absent=[p for p in profiles if p["slot"]!=slot]
+    absent_witness={k:v for k,v in witnesses.items() if k!=slot}
+    if verifier.verify(absent,absent_witness):
+        raise RuntimeError("stop transition rejected for "+slot)
+    verifier.end_transition()
+    if verifier.verify(absent,absent_witness):
+        raise RuntimeError("post-stop state rejected for "+slot)
+    results["stop"]=True
+
+    verifier.begin_transition("start",slot)
+    if verifier.verify(absent,absent_witness):
+        raise RuntimeError("start transition absence rejected for "+slot)
+    if verifier.verify(profiles,witnesses):
+        raise RuntimeError("start transition profile rejected for "+slot)
+    verifier.end_transition()
+    if verifier.verify(profiles,witnesses):
+        raise RuntimeError("post-start state rejected for "+slot)
+    results["start"]=True
+
+    verifier=StreamRelationalVerifier(policy)
+    verifier.begin_transition("restart",slot)
+    if verifier.verify(absent,absent_witness):
+        raise RuntimeError("restart transition absence rejected for "+slot)
+    changed=copy.deepcopy(profiles)
+    row=next(p for p in changed if p["slot"]==slot)
+    new_uuid=hashlib.sha256(("restart:"+slot).encode()).hexdigest()[:32]
+    row["nfInstanceId"]=f"{new_uuid[:8]}-{new_uuid[8:12]}-{new_uuid[12:16]}-{new_uuid[16:20]}-{new_uuid[20:32]}"
+    changed_witness=copy.deepcopy(witnesses)
+    changed_witness[slot]["nf_instance_id"]=row["nfInstanceId"]
+    if verifier.verify(changed,changed_witness):
+        raise RuntimeError("restart new UUID rejected for "+slot)
+    verifier.end_transition()
+    if verifier.verify(changed,changed_witness):
+        raise RuntimeError("post-restart state rejected for "+slot)
+    results["restart"]=True
+    return results
+
+
 def run_ci(policy,output,soak_seconds):
     output=Path(output)
     output.mkdir(parents=True,exist_ok=True)
     profiles,witnesses=default_profiles(policy)
-    verifier=StreamRelationalVerifier(policy)
-    if verifier.verify(profiles,witnesses):
+    if StreamRelationalVerifier(policy).verify(profiles,witnesses):
         raise RuntimeError("clean baseline rejected")
 
-    slot="nssf1" if "nssf1" in policy.slots else sorted(policy.slots)[0]
-    attack_results={}
+    kinds=("identity","endpoint","service","fqdn","type","duplicate")
+    attack_matrix={}
     latencies=[]
-    for kind in ("identity","endpoint","service","fqdn","type","duplicate"):
-        attacked=mutate(profiles,slot,kind)
-        t0=time.perf_counter_ns()
-        alerts=verifier.verify(attacked,witnesses)
-        ms=(time.perf_counter_ns()-t0)/1_000_000
-        if not alerts:
-            raise RuntimeError("missed "+kind)
-        attack_results[kind]={"detected":True,"alerts":alerts,"attack_to_alert_ms":ms}
-        latencies.append(ms)
+    per_nf_type={}
+    for slot in sorted(policy.slots):
+        typ=policy.slots[slot]["nf_type"]
+        per_nf_type.setdefault(typ,{"tested":0,"detected":0})
+        slot_results={}
+        for kind in kinds:
+            attacked=mutate(profiles,slot,kind)
+            verifier=StreamRelationalVerifier(policy)
+            t0=time.perf_counter_ns()
+            alerts=verifier.verify(attacked,witnesses)
+            ms=(time.perf_counter_ns()-t0)/1_000_000
+            if not alerts:
+                raise RuntimeError(f"missed {kind} on {slot}")
+            slot_results[kind]={
+                "detected":True,
+                "alerts":alerts,
+                "detector_execution_latency_ms":ms,
+            }
+            latencies.append(ms)
+            per_nf_type[typ]["tested"]+=1
+            per_nf_type[typ]["detected"]+=1
+        attack_matrix[slot]=slot_results
 
+    poison_results={}
     with tempfile.TemporaryDirectory() as td:
-        registry=PersistentRegistry(Path(td)/"nrf_registry.json")
-        registry.write(profiles)
-        registry.write(mutate(registry.read(),slot,"service"))
-        poisoned=PersistentRegistry(registry.path).read()
-        poison_alerts=verifier.verify(poisoned,witnesses)
-        if not any(a.startswith("semantic_mismatch") for a in poison_alerts):
-            raise RuntimeError("persistent poisoning survived policy")
+        for slot in sorted(policy.slots):
+            for kind in ("fqdn","service"):
+                path=Path(td)/f"{slot}-{kind}.json"
+                registry=PersistentRegistry(path)
+                registry.write(mutate(profiles,slot,kind))
+                reopened=PersistentRegistry(path).read()
+                alerts=StreamRelationalVerifier(policy).verify(reopened,witnesses)
+                expected="semantic_mismatch:"+slot
+                if expected not in alerts:
+                    raise RuntimeError(f"persistent {kind} poisoning survived policy for {slot}")
+                poison_results[f"{slot}:{kind}"]={"detected":True,"alerts":alerts}
 
-    verifier.begin_transition("restart",slot)
-    missing=[p for p in profiles if p["slot"]!=slot]
-    if verifier.verify(missing,{k:v for k,v in witnesses.items() if k!=slot}):
-        raise RuntimeError("moving absence rejected")
-    new_profiles=copy.deepcopy(profiles)
-    p=next(x for x in new_profiles if x["slot"]==slot)
-    p["nfInstanceId"]="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    new_witnesses=copy.deepcopy(witnesses)
-    new_witnesses[slot]["nf_instance_id"]=p["nfInstanceId"]
-    if verifier.verify(new_profiles,new_witnesses):
-        raise RuntimeError("causal restart rejected")
-    verifier.end_transition()
-    profiles,witnesses=new_profiles,new_witnesses
+    lifecycle_results={}
+    for slot in sorted(policy.slots):
+        lifecycle_results[slot]=lifecycle_case(policy,profiles,witnesses,slot)
 
+    kie_slot="nssf1" if "nssf1" in policy.slots else sorted(policy.slots)[0]
     with tempfile.TemporaryDirectory() as td:
         primary=Path(td)/"anchor.json"
         mirror=Path(td)/"anchor_mirror.json"
@@ -408,12 +468,22 @@ def run_ci(policy,output,soak_seconds):
         skey=hashlib.sha256(b"stage39-subject").digest()
         now=int(time.time()*1000)
         digest=sha256_json(profiles)
-        req=KIERequest.create("verifier-a",slot,1,policy.digest,digest,ckey,now,"0123456789abcdef0123456789abcdef")
+        req=KIERequest.create("verifier-a",kie_slot,1,policy.digest,digest,ckey,now,"0123456789abcdef0123456789abcdef")
         anchor=FreshnessAnchor(primary,mirror,seal)
         req.verify(ckey,anchor,policy.digest,digest,now)
         primary.unlink()
         recovered=FreshnessAnchor(primary,mirror,seal)
-        response=KIEResponse.create(req,{"profile_digest":digest,"witness_digest":sha256_json(witnesses[slot]),"process_alive":True,"sbi_reachable":True},skey,now)
+        response=KIEResponse.create(
+            req,
+            {
+                "profile_digest":digest,
+                "witness_digest":sha256_json(witnesses[kie_slot]),
+                "process_alive":True,
+                "sbi_reachable":True,
+            },
+            skey,
+            now,
+        )
         response.verify(skey,req,now)
         try:
             recovered.check_and_commit(req.controller_id,req.subject_id,req.cycle,req.nonce,req.issued_at_ms,now)
@@ -422,21 +492,31 @@ def run_ci(policy,output,soak_seconds):
             pass
         tampered=dataclasses.replace(req,telemetry_digest="0"*64)
         try:
-            tampered.verify(ckey,FreshnessAnchor(Path(td)/"tamper.json"),policy.digest,"0"*64,now)
+            tampered.verify(
+                ckey,
+                FreshnessAnchor(Path(td)/"tamper.json"),
+                policy.digest,
+                "0"*64,
+                now,
+            )
             raise RuntimeError("tamper accepted")
         except SecurityError:
             pass
 
+    soak_verifier=StreamRelationalVerifier(policy)
     started=time.perf_counter()
     iterations=false_alerts=0
     while time.perf_counter()-started < max(0.0,float(soak_seconds)):
         iterations+=1
-        false_alerts+=int(bool(verifier.verify(profiles,witnesses)))
+        false_alerts+=int(bool(soak_verifier.verify(profiles,witnesses)))
         time.sleep(0.005)
     if false_alerts:
         raise RuntimeError("clean soak false alert")
 
-    p95=sorted(latencies)[-1]
+    p95=nearest_rank(latencies,0.95)
+    total_attacks=len(policy.slots)*len(kinds)
+    total_poison=len(poison_results)
+    total_lifecycle=len(policy.slots)*3
     report={
         "stage":39,
         "analysis_kind":"GitHub Actions CI integration harness; not a new Open5GS production trial",
@@ -447,35 +527,75 @@ def run_ci(policy,output,soak_seconds):
             "version":KIE_VERSION,
             "auth":"HMAC-SHA256",
             "freshness":["timestamp_window","monotonic_cycle","nonce_cache","persistent_anchor","sealed_recovery_mirror"],
-            "telemetry_binding":True,"policy_binding":True,
+            "telemetry_binding":True,
+            "policy_binding":True,
             "replay_after_restart_rejected":True,
             "primary_anchor_loss_recovered":True,
             "tamper_rejected":True,
         },
-        "streaming":{"uses_future_post_reference":False,"authorized_restart_without_post_reference":True},
-        "independent_full_profile_policy":{"fqdn":True,"services":True,"endpoint":True,"nf_type":True},
-        "persistent_reference_poisoning":{"file_backed_registry_survived_reopen":True,"detected":True,"alerts":poison_alerts},
-        "attacks":attack_results,
-        "latency_ms":{"samples":latencies,"median":statistics.median(latencies),"p95":p95,"max":max(latencies)},
+        "streaming":{
+            "uses_future_post_reference":False,
+            "lifecycle_operations":["stop","start","restart"],
+            "lifecycle_cases":total_lifecycle,
+            "lifecycle_passed":total_lifecycle,
+            "by_slot":lifecycle_results,
+        },
+        "independent_full_profile_policy":{
+            "fqdn":True,
+            "services":True,
+            "endpoint":True,
+            "nf_type":True,
+            "stage38_two_instance_types_restored":["NSSF","AUSF","BSF","UDM"],
+        },
+        "persistent_reference_poisoning":{
+            "file_backed_registry_survived_reopen":True,
+            "cases":total_poison,
+            "detected":total_poison,
+            "by_slot_and_field":poison_results,
+        },
+        "attacks":{
+            "families":list(kinds),
+            "cases":total_attacks,
+            "detected":total_attacks,
+            "per_nf_type":per_nf_type,
+            "matrix":attack_matrix,
+        },
+        "detector_execution_latency_ms":{
+            "measurement_scope":"time from in-process verifier call entry to return; not end-to-end attack-to-alert latency",
+            "sample_count":len(latencies),
+            "median":statistics.median(latencies),
+            "p95_nearest_rank":p95,
+            "max":max(latencies),
+        },
         "soak":{"requested_seconds":float(soak_seconds),"iterations":iterations,"false_alerts":false_alerts},
         "limitations":[
             "CI harness, not a new live Open5GS measurement.",
+            "Detector timing excludes transport, NRF/SCP propagation, collection and scheduling delays.",
             "Test keys are ephemeral; production key custody and hardware attestation are not established.",
             "Repository policy is independent of NRF observations, but repository compromise remains a common risk.",
             "Recovery mirror covers single-anchor loss, not simultaneous destruction of all copies.",
         ],
     }
-    (output/"stage39_report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+    (output/"stage39_report.json").write_text(
+        json.dumps(report,indent=2,ensure_ascii=False)+"\n",
+        encoding="utf-8",
+    )
     (output/"stage39_report.md").write_text(
         "# Stage39 KIE / streaming CI report\n\n"
         f"- NF types: {', '.join(report['nf_types'])}\n"
+        f"- Slots: {report['slots']}\n"
         f"- Future post-reference used: {report['streaming']['uses_future_post_reference']}\n"
+        f"- Lifecycle stop/start/restart: {total_lifecycle}/{total_lifecycle} cases passed\n"
         f"- KIE replay after restart rejected: {report['kie']['replay_after_restart_rejected']}\n"
-        f"- Persistent registry poisoning detected: {report['persistent_reference_poisoning']['detected']}\n"
-        f"- Attack families detected: {len(attack_results)}/{len(attack_results)}\n"
-        f"- Median / p95 verifier latency: {report['latency_ms']['median']:.3f} / {report['latency_ms']['p95']:.3f} ms\n"
+        f"- Persistent FQDN/service poisoning: {total_poison}/{total_poison} detected\n"
+        f"- Attack matrix: {total_attacks}/{total_attacks} detected across all configured slots\n"
+        f"- Detector execution median / p95 / max: "
+        f"{report['detector_execution_latency_ms']['median']:.3f} / "
+        f"{report['detector_execution_latency_ms']['p95_nearest_rank']:.3f} / "
+        f"{report['detector_execution_latency_ms']['max']:.3f} ms "
+        f"(n={len(latencies)}, in-process only)\n"
         f"- Clean soak: {iterations} iterations, {false_alerts} false alerts\n",
-        encoding="utf-8"
+        encoding="utf-8",
     )
     return report
 
