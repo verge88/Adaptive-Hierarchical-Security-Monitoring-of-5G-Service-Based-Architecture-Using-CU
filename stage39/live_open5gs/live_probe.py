@@ -30,6 +30,7 @@ WITNESS=Path("/run/stage39/witness")
 MUTATION_ROOT=Path("/run/stage38")
 MUTATION_PLAN=MUTATION_ROOT/"plan.tsv"
 MUTATION_ENABLE=MUTATION_ROOT/"enabled"
+KIE_EXTENSION_PATH=Path("/run/stage39/kie-extension.json")
 LIVE_POLICY_PATH=ROOT/"live_policy.json"
 NRF_HOST="127.0.0.10"
 NRF_PORT=80
@@ -1018,6 +1019,93 @@ async def run_persistent_registration_poisoning(clean,witness,policy):
 
 
 
+
+async def run_kie_sbi_vendor_extension(clean,policy):
+    KIE_EXTENSION_PATH.unlink(missing_ok=True)
+    controller_key=hashlib.sha256(
+        b"stage39-live-sbi-kie-controller"
+    ).digest()
+    telemetry_digest=sha256_json({
+        typ:canonical_rows(rows)
+        for typ,rows in clean.items()
+    })
+    policy_digest=hashlib.sha256(
+        LIVE_POLICY_PATH.read_bytes()
+    ).hexdigest()
+    now=int(time.time()*1000)
+    req=KIERequest.create(
+        "stage39-kie-sbi-controller",
+        "nnrf-disc",
+        7001,
+        policy_digest,
+        telemetry_digest,
+        controller_key,
+        now,
+        "39ab39ab39ab39ab39ab39ab39ab39ab",
+    )
+    extension={
+        **req.core(),
+        "mac":req.mac,
+        "carrier":"nnrf-disc-json-vendor-extension",
+        "field":"x-stage39-kie",
+    }
+    atomic_json_write(KIE_EXTENSION_PATH,extension)
+    anchor_path=Path("/run/stage39/kie-sbi-anchor.json")
+    anchor_path.unlink(missing_ok=True)
+    try:
+        doc=await discover_document("NSSF")
+        observed=doc.get("x-stage39-kie")
+        if not isinstance(observed,dict):
+            raise RuntimeError(
+                "Nnrf discovery response missing x-stage39-kie"
+            )
+        if observed.get("kind")!="KIE_REQUEST":
+            raise RuntimeError("KIE SBI extension kind mismatch")
+        if int(observed.get("version",-1))!=1:
+            raise RuntimeError("KIE SBI extension version mismatch")
+        observed_req=KIERequest(
+            str(observed.get("controller_id","")),
+            str(observed.get("subject_id","")),
+            int(observed.get("cycle",-1)),
+            int(observed.get("issued_at_ms",0)),
+            str(observed.get("nonce","")),
+            str(observed.get("policy_sha256","")),
+            str(observed.get("telemetry_digest","")),
+            str(observed.get("mac","")),
+        )
+        observed_req.verify(
+            controller_key,
+            FreshnessAnchor(anchor_path),
+            policy_digest,
+            telemetry_digest,
+            now,
+        )
+        if observed.get("carrier")!="nnrf-disc-json-vendor-extension":
+            raise RuntimeError("KIE SBI carrier marker mismatch")
+        if observed.get("field")!="x-stage39-kie":
+            raise RuntimeError("KIE SBI field marker mismatch")
+    finally:
+        KIE_EXTENSION_PATH.unlink(missing_ok=True)
+
+    clean_doc=await discover_document("NSSF")
+    if "x-stage39-kie" in clean_doc:
+        raise RuntimeError("KIE SBI extension persisted after removal")
+    return {
+        "verified":True,
+        "sbi_service":"nnrf-disc",
+        "json_field":"x-stage39-kie",
+        "carrier":"vendor extension in live Open5GS discovery response",
+        "hmac":"HMAC-SHA256",
+        "cycle":req.cycle,
+        "nonce":req.nonce,
+        "policy_sha256":policy_digest,
+        "telemetry_digest":telemetry_digest,
+        "removed_cleanly":True,
+        "standardization":
+            "research vendor extension; no new standardized 3GPP IE claimed",
+    }
+
+
 def registry_service_poison(profile,template_service,typ,index):
     poisoned=copy.deepcopy(profile)
     services=poisoned.get("nfServices")
@@ -1295,6 +1383,9 @@ async def main_async(
         native_mutations=await run_native_mutations(
             clean,witness,live_policy,external_mutation_control
         )
+        kie_sbi_extension=await run_kie_sbi_vendor_extension(
+            clean,live_policy
+        )
 
         live_evidence={
             "open5gs_ref":"v2.7.6",
@@ -1339,6 +1430,7 @@ async def main_async(
             "live_registry_field_poisoning":
                 registry_field_poisoning,
             "native_mutations":native_mutations,
+            "kie_sbi_vendor_extension":kie_sbi_extension,
         }
 
         telemetry_digest=sha256_json(live_evidence)
@@ -1444,6 +1536,7 @@ async def main_async(
                 "timing_ms":native_mutations["timing_ms"],
             },
             "kie_bound_to_live_evidence":True,
+            "kie_sbi_vendor_extension":kie_sbi_extension,
             "telemetry_digest":telemetry_digest,
             "limitations":[
                 "External witness runs in a separate container and keeps its "
@@ -1525,10 +1618,13 @@ async def main_async(
             )
             + f"- KIE bound to live evidence: "
             f"{report['kie_bound_to_live_evidence']}\n"
+            f"- KIE carried in live Nnrf discovery vendor extension: "
+            f"{kie_sbi_extension['verified']}\n"
         )
         print(json.dumps(report,indent=2,ensure_ascii=False))
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
+        KIE_EXTENSION_PATH.unlink(missing_ok=True)
         stop_all(processes)
 
 
