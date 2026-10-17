@@ -48,6 +48,13 @@ class LifecycleAuthority:
             raise LifecycleAuthorizationError("lifecycle policy mismatch")
         if payload.get("operation") not in {"stop","start","restart"}:
             raise LifecycleAuthorizationError("invalid lifecycle operation")
+        issued_at_ms=int(payload.get("issued_at_ms",0))
+        now_ms=int(time.time()*1000)
+        if issued_at_ms<=0 or abs(now_ms-issued_at_ms)>60_000:
+            raise LifecycleAuthorizationError("stale lifecycle authorization")
+        max_window_ms=int(payload.get("max_window_ms",0))
+        if max_window_ms<=0 or max_window_ms>60_000:
+            raise LifecycleAuthorizationError("invalid lifecycle window")
         self.last_sequence=sequence
         self.nonces.add(nonce)
         if len(self.nonces)>10000:
@@ -181,7 +188,10 @@ def main():
         raise RuntimeError("event/label cardinality mismatch")
 
     tampered=copy.deepcopy(events[0])
-    tampered["payload"]["operation"]="stop"
+    original_operation=tampered["payload"]["operation"]
+    tampered["payload"]["operation"]=(
+        "restart" if original_operation!="restart" else "stop"
+    )
     try:
         LifecycleAuthority(key,policy.digest).verify(tampered)
         raise RuntimeError("tampered lifecycle event accepted")
