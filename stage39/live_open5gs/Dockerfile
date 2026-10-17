@@ -6,7 +6,7 @@ ARG OPEN5GS_REF=v2.7.6
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git meson ninja-build build-essential flex bison cmake openssl \
     python3 python3-pip python3-setuptools python3-wheel pkg-config \
-    libsctp-dev libc-ares-dev libgnutls28-dev libgcrypt20-dev libssl-dev \
+    libsctp-dev libc-ares-dev libgnutls28-dev libgcrypt-dev libssl-dev \
     libmongoc-dev libbson-dev libyaml-dev libnghttp2-dev libmicrohttpd-dev \
     libcurl4-gnutls-dev libtins-dev libtalloc-dev libidn-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -36,9 +36,10 @@ RUN mkdir -p /var/log/open5gs /run/stage39/witness \
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir h2 cryptography
 
-RUN mkdir -p /opt/stage39/hnet \
-    && openssl genpkey -algorithm X25519 -out /opt/stage39/hnet/curve25519-1.key \
-    && chmod 600 /opt/stage39/hnet/curve25519-1.key
+RUN mkdir -p /opt/stage39/hnet /opt/stage38/hnet \
+    && openssl genpkey -algorithm X25519 -out /opt/stage38/hnet/curve25519-1.key \
+    && cp /opt/stage38/hnet/curve25519-1.key /opt/stage39/hnet/curve25519-1.key \
+    && chmod 600 /opt/stage38/hnet/curve25519-1.key /opt/stage39/hnet/curve25519-1.key
 
 COPY stage38/external_testbed/*.yaml /opt/stage39/
 COPY stage39/live_open5gs/*.yaml /opt/stage39/
