@@ -1073,9 +1073,27 @@ async def run_kie_sbi_vendor_extension(clean,policy):
         now,
         "39ab39ab39ab39ab39ab39ab39ab39ab",
     )
+    subject_key=hashlib.sha256(
+        b"stage39-live-sbi-kie-subject"
+    ).digest()
+    resp=KIEResponse.create(
+        req,
+        {
+            "subject":"live-open5gs-nrf",
+            "profile_digest":telemetry_digest,
+            "policy_sha256":policy_digest,
+            "status":"OK",
+        },
+        subject_key,
+        now,
+    )
     extension={
         **req.core(),
         "mac":req.mac,
+        "response":{
+            **resp.core(),
+            "mac":resp.mac,
+        },
         "carrier":"nnrf-disc-json-vendor-extension",
         "field":"x-stage39-kie",
     }
@@ -1110,6 +1128,25 @@ async def run_kie_sbi_vendor_extension(clean,policy):
             telemetry_digest,
             now,
         )
+        observed_response=observed.get("response")
+        if not isinstance(observed_response,dict):
+            raise RuntimeError("KIE SBI response missing")
+        observed_resp=KIEResponse(
+            str(observed_response.get("controller_id","")),
+            str(observed_response.get("subject_id","")),
+            int(observed_response.get("cycle",-1)),
+            str(observed_response.get("request_nonce","")),
+            int(observed_response.get("issued_at_ms",0)),
+            observed_response.get("report")
+                if isinstance(observed_response.get("report"),dict)
+                else {},
+            str(observed_response.get("mac","")),
+        )
+        observed_resp.verify(
+            subject_key,observed_req,now
+        )
+        if observed_response.get("report",{}).get("status")!="OK":
+            raise RuntimeError("KIE SBI response status mismatch")
         if observed.get("carrier")!="nnrf-disc-json-vendor-extension":
             raise RuntimeError("KIE SBI carrier marker mismatch")
         if observed.get("field")!="x-stage39-kie":
@@ -1126,6 +1163,9 @@ async def run_kie_sbi_vendor_extension(clean,policy):
         "json_field":"x-stage39-kie",
         "carrier":"vendor extension in live Open5GS discovery response",
         "hmac":"HMAC-SHA256",
+        "request_verified":True,
+        "response_verified":True,
+        "request_response_bound_by_cycle_nonce":True,
         "cycle":req.cycle,
         "nonce":req.nonce,
         "policy_sha256":policy_digest,
