@@ -92,6 +92,17 @@ jobs:
           cat stage39_live_out/live_open5gs_report.md \
             >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run live Open5GS mutual-TLS SBI probe
+        run: |
+          set -euo pipefail
+          mkdir -p stage39_live_out/mtls
+          docker run --rm --network host \
+            -v "$PWD/stage39_live_out/mtls:/out" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/mtls_probe.py --output /out
+          cat stage39_live_out/mtls/live_open5gs_mtls_report.md \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Core and MongoDB diagnostics
         if: failure()
         run: |
