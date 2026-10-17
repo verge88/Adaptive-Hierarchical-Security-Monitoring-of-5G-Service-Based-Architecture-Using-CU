@@ -14,7 +14,6 @@ from stage39_kie import (
     StreamRelationalVerifier,
     default_profiles,
     hmac_hex,
-    mutate,
     normalize_profile,
     sha256_json,
 )
@@ -113,6 +112,62 @@ def signed_full_policy_alert(
     if len(slots)!=len(set(slots)):
         alerts.append("duplicate_slot")
     return sorted(set(alerts))
+
+
+
+def external_mutate(profiles,slot,family,token):
+    out=copy.deepcopy(profiles)
+    target=next(row for row in out if row["slot"]==slot)
+    digest=hashlib.sha256(token.encode()).hexdigest()
+    if family=="identity":
+        raw=digest[:32]
+        target["nfInstanceId"]=(
+            f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-"
+            f"{raw[16:20]}-{raw[20:32]}"
+        )
+    elif family=="endpoint":
+        octet=1+(int(digest[:2],16)%250)
+        target["ipv4Addresses"]=[f"198.51.100.{octet}"]
+    elif family=="service":
+        target.setdefault("nfServices",[]).append({
+            "serviceName":"external-"+token[:10],
+            "scheme":"https",
+            "status":"REGISTERED",
+            "versions":["v1"],
+            "endpoints":[{
+                "ip":f"198.51.100.{1+(int(digest[2:4],16)%250)}",
+                "port":10000+(int(digest[4:8],16)%50000),
+                "transport":"TCP",
+            }],
+        })
+    elif family=="fqdn":
+        target["fqdn"]=f"{token}.external.invalid"
+    elif family=="type":
+        types=("NSSF","AUSF","BSF","UDM","AMF","SMF","PCF","NRF","SCP")
+        current=target["nfType"]
+        target["nfType"]=next(x for x in types if x!=current)
+    elif family=="compound":
+        raw=digest[:32]
+        target["nfInstanceId"]=(
+            f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-"
+            f"{raw[16:20]}-{raw[20:32]}"
+        )
+        target.setdefault("nfServices",[]).append({
+            "serviceName":"external-compound-"+token[:8],
+            "scheme":"https",
+            "status":"REGISTERED",
+            "versions":["v1"],
+            "endpoints":[{
+                "ip":"198.51.100.254",
+                "port":443,
+                "transport":"TCP",
+            }],
+        })
+    elif family=="duplicate":
+        out.append(copy.deepcopy(target))
+    else:
+        raise ValueError(f"unknown external family {family}")
+    return out
 
 
 def count_status_alert(pre_profiles,observed):
@@ -246,7 +301,12 @@ def main():
         }
         if label["attacked"]:
             target=str(label["target_slot"])
-            observed=mutate(observed,target,str(label["family"]))
+            observed=external_mutate(
+                observed,
+                target,
+                str(label["family"]),
+                str(label["mutation_token"]),
+            )
 
         relational_alerts=verifier.verify(
             observed,observed_witness
@@ -332,6 +392,7 @@ def main():
         "attacked_events":attacks,
         "labels_not_passed_to_detector_api":True,
         "labels_joined_for_metrics_after_decisions":True,
+        "external_mutation_implementation_independent_of_stage39_kie_mutate":True,
         "signed_orchestrator":{
             "source_id":"external-orchestrator-generator",
             "hmac":"HMAC-SHA256",
