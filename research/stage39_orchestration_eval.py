@@ -67,7 +67,7 @@ def profiles_by_slot(profiles):
 
 
 def signed_full_policy_alert(
-    policy,pre_profiles,observed,operation,moving_slot
+    policy,pre_profiles,observed,operation,moving_slot,witnesses=None
 ):
     pre=profiles_by_slot(pre_profiles)
     obs=profiles_by_slot(observed)
@@ -92,6 +92,12 @@ def signed_full_policy_alert(
             alerts.append("unexpected_slot:"+slot)
         elif not policy.matches(row):
             alerts.append("semantic:"+slot)
+        if witnesses is not None and slot in witnesses:
+            w=witnesses[slot]
+            if str(row.get("nfInstanceId","")).lower()!=str(
+                w.get("nf_instance_id","")
+            ).lower():
+                alerts.append("witness_uuid:"+slot)
     ids=[row["nfInstanceId"] for row in obs.values()]
     if len(ids)!=len(set(ids)):
         alerts.append("duplicate_nfInstanceId")
@@ -231,8 +237,11 @@ def main():
         relational_alerts=verifier.verify(
             observed,observed_witness
         )
-        signed_full_alerts=signed_full_policy_alert(
-            policy,pre_profiles,observed,operation,slot
+        signed_full_no_witness=signed_full_policy_alert(
+            policy,pre_profiles,observed,operation,slot,None
+        )
+        signed_full_with_witness=signed_full_policy_alert(
+            policy,pre_profiles,observed,operation,slot,pre_witnesses
         )
         strict_snapshot_alert=(
             canonical_state(observed)!=canonical_state(pre_profiles)
@@ -288,7 +297,10 @@ def main():
             "event_id":event["event_id"],
             "alerts":{
                 "relational_signed_event":bool(relational_alerts),
-                "lifecycle_aware_full_policy":bool(signed_full_alerts),
+                "lifecycle_aware_full_policy_no_witness":
+                    bool(signed_full_no_witness),
+                "lifecycle_aware_full_policy_plus_witness":
+                    bool(signed_full_with_witness),
                 "full_pre_or_post_snapshot":pre_or_post_alert,
                 "strict_pre_snapshot":strict_snapshot_alert,
                 "count_status":count_alert,
@@ -304,7 +316,8 @@ def main():
         "events":len(events),
         "benign_events":benign,
         "attacked_events":attacks,
-        "labels_joined_after_detector_decision":True,
+        "labels_not_passed_to_detector_api":True,
+        "labels_joined_for_metrics_after_decisions":True,
         "signed_orchestrator":{
             "source_id":"external-orchestrator-generator",
             "hmac":"HMAC-SHA256",
@@ -320,8 +333,8 @@ def main():
             "max":max(auth_latencies),
         },
         "interpretation":{
-            "lifecycle_aware_full_policy_is_strong_baseline":True,
-            "relational_advantage_not_claimed_when_equally_expressive_lifecycle_policy_is_available":True,
+            "lifecycle_aware_full_policy_plus_witness_is_strong_baseline":True,
+            "no_uniqueness_claim_when_equally_expressive_lifecycle_and_witness_policy_matches_relational_result":True,
             "future_post_reference_used_by_relational_signed_event":False,
         },
     }
