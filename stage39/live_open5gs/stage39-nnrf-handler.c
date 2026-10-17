@@ -122,6 +122,7 @@ static unsigned long *stage38_counter_for(const char *target_type)
     static unsigned long smf = 0;
     static unsigned long pcf = 0;
     static unsigned long scp = 0;
+    static unsigned long nrf = 0;
 
     if (!strcmp(target_type, "NSSF")) return &nssf;
     if (!strcmp(target_type, "AUSF")) return &ausf;
@@ -131,13 +132,14 @@ static unsigned long *stage38_counter_for(const char *target_type)
     if (!strcmp(target_type, "SMF")) return &smf;
     if (!strcmp(target_type, "PCF")) return &pcf;
     if (!strcmp(target_type, "SCP")) return &scp;
+    if (!strcmp(target_type, "NRF")) return &nrf;
     return NULL;
 }
 
 static int stage38_slot_code(int parameter)
 {
     int code = parameter / 100;
-    return (code >= 1 && code <= 12) ? code : 1;
+    return (code >= 1 && code <= 13) ? code : 1;
 }
 
 static int stage38_variant(int parameter)
@@ -161,6 +163,7 @@ static const char *stage38_endpoint_for_slot(int slot_code)
     case 10: return "127.0.0.21";
     case 11: return "127.0.0.22";
     case 12: return "127.0.0.11";
+    case 13: return "127.0.0.10";
     default: return "127.0.0.12";
     }
 }
@@ -333,10 +336,10 @@ static bool stage38_nf_type_substitution(
         cJSON_GetObjectItemCaseSensitive(profile, "nfType") : NULL;
     const char *types[] = {
         "NSSF", "AUSF", "BSF", "UDM",
-        "AMF", "SMF", "PCF", "SCP"
+        "AMF", "SMF", "PCF", "SCP", "NRF"
     };
     const char *replacement;
-    int index = (variant - 1) % 8;
+    int index = (variant - 1) % 9;
 
     (void)tick;
     if (!cJSON_IsString(type))
@@ -344,7 +347,7 @@ static bool stage38_nf_type_substitution(
 
     replacement = types[index];
     if (!strcmp(type->valuestring, replacement))
-        replacement = types[(index + 1) % 8];
+        replacement = types[(index + 1) % 9];
     cJSON_SetValuestring(type, replacement);
     return true;
 }
