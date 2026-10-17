@@ -42,6 +42,7 @@
 
 #define STAGE38_ENABLE_PATH "/run/stage38/enabled"
 #define STAGE38_PLAN_PATH "/run/stage38/plan.tsv"
+#define STAGE39_KIE_EXTENSION_PATH "/run/stage39/kie-extension.json"
 #define STAGE38_MAX_PLAN 8192
 #define STAGE38_KIND_LEN 48
 #define STAGE38_TYPE_LEN 16
@@ -378,6 +379,23 @@ static bool stage39_duplicate_profile(
     return true;
 }
 
+static cJSON *stage39_load_kie_extension(void)
+{
+    FILE *fp = NULL;
+    char buffer[8192];
+    size_t length = 0;
+
+    fp = fopen(STAGE39_KIE_EXTENSION_PATH, "r");
+    if (!fp)
+        return NULL;
+    length = fread(buffer, 1, sizeof(buffer)-1, fp);
+    fclose(fp);
+    if (!length || length >= sizeof(buffer)-1)
+        return NULL;
+    buffer[length] = '\0';
+    return cJSON_Parse(buffer);
+}
+
 static bool stage38_lab_instrument_discovery_response(
         ogs_sbi_response_t *response, OpenAPI_nf_type_e target_nf_type)
 {
@@ -385,21 +403,24 @@ static bool stage38_lab_instrument_discovery_response(
     unsigned long *counter = NULL;
     cJSON *root = NULL;
     cJSON *instances = NULL;
+    cJSON *kie_extension = NULL;
     stage38_plan_entry_t *entry = NULL;
     char *serialized = NULL;
     char *owned = NULL;
-    unsigned long tick;
+    unsigned long tick = 0;
     struct timespec stage39_mutation_ts;
     double stage39_mutation_ns = 0;
     bool changed = false;
+    bool kie_added = false;
+    bool mutation_enabled =
+        access(STAGE38_ENABLE_PATH, F_OK) == 0;
+    bool kie_enabled =
+        access(STAGE39_KIE_EXTENSION_PATH, F_OK) == 0;
 
-    if (access(STAGE38_ENABLE_PATH, F_OK) != 0 || !response ||
+    if (!response ||
         response->status != OGS_SBI_HTTP_STATUS_OK ||
-        !response->http.content || !response->http.content_length)
-        return false;
-
-    counter = stage38_counter_for(target_type);
-    if (!counter)
+        !response->http.content || !response->http.content_length ||
+        (!mutation_enabled && !kie_enabled))
         return false;
 
     root = cJSON_Parse(response->http.content);
@@ -411,59 +432,86 @@ static bool stage38_lab_instrument_discovery_response(
         return false;
     }
 
-    tick = (*counter)++;
-    entry = stage38_entry_for(target_type, tick);
-    if (!entry) {
+    if (kie_enabled) {
+        kie_extension = stage39_load_kie_extension();
+        if (kie_extension) {
+            cJSON_DeleteItemFromObjectCaseSensitive(
+                root, "x-stage39-kie");
+            cJSON_AddItemToObject(
+                root, "x-stage39-kie", kie_extension);
+            kie_added = true;
+        } else {
+            ogs_error(
+                "STAGE39: cannot parse KIE SBI extension [%s]",
+                STAGE39_KIE_EXTENSION_PATH);
+        }
+    }
+
+    if (mutation_enabled) {
+        counter = stage38_counter_for(target_type);
+        if (counter) {
+            tick = (*counter)++;
+            entry = stage38_entry_for(target_type, tick);
+        }
+
+        if (entry) {
+            if (!strcmp(entry->kind, "identity_replacement")) {
+                changed = stage38_identity_replacement(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "endpoint_substitution")) {
+                changed = stage38_endpoint_substitution(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "service_injection")) {
+                changed = stage38_service_injection(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "fqdn_substitution")) {
+                changed = stage38_fqdn_substitution(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "nf_type_substitution")) {
+                changed = stage38_nf_type_substitution(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "compound_identity_service")) {
+                changed = stage38_compound_identity_service(
+                    instances, tick, entry->parameter);
+            } else if (!strcmp(entry->kind, "duplicate_profile")) {
+                changed = stage39_duplicate_profile(
+                    instances, tick, entry->parameter);
+            } else {
+                ogs_error(
+                    "STAGE39: unknown plan kind [%s]", entry->kind);
+            }
+
+            if (!changed) {
+                ogs_error(
+                    "STAGE39: planned mutation failed "
+                    "[type:%s tick:%lu kind:%s parameter:%d]",
+                    target_type, tick, entry->kind, entry->parameter);
+                cJSON_Delete(root);
+                return false;
+            }
+
+            if (clock_gettime(
+                    CLOCK_MONOTONIC, &stage39_mutation_ts) != 0) {
+                ogs_error("STAGE39: clock_gettime failed");
+                cJSON_Delete(root);
+                return false;
+            }
+            stage39_mutation_ns =
+                (double)stage39_mutation_ts.tv_sec * 1000000000.0 +
+                (double)stage39_mutation_ts.tv_nsec;
+            cJSON_DeleteItemFromObjectCaseSensitive(
+                root, "stage39MutationMonotonicNs");
+            cJSON_AddNumberToObject(
+                root,
+                "stage39MutationMonotonicNs",
+                stage39_mutation_ns);
+        }
+    }
+
+    if (!changed && !kie_added) {
         cJSON_Delete(root);
         return false;
     }
-
-    if (!strcmp(entry->kind, "identity_replacement")) {
-        changed = stage38_identity_replacement(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "endpoint_substitution")) {
-        changed = stage38_endpoint_substitution(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "service_injection")) {
-        changed = stage38_service_injection(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "fqdn_substitution")) {
-        changed = stage38_fqdn_substitution(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "nf_type_substitution")) {
-        changed = stage38_nf_type_substitution(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "compound_identity_service")) {
-        changed = stage38_compound_identity_service(
-            instances, tick, entry->parameter);
-    } else if (!strcmp(entry->kind, "duplicate_profile")) {
-        changed = stage39_duplicate_profile(
-            instances, tick, entry->parameter);
-    } else {
-        ogs_error("STAGE38: unknown plan kind [%s]", entry->kind);
-    }
-
-    if (!changed) {
-        ogs_error(
-            "STAGE38: planned mutation failed "
-            "[type:%s tick:%lu kind:%s parameter:%d]",
-            target_type, tick, entry->kind, entry->parameter);
-        cJSON_Delete(root);
-        return false;
-    }
-
-    if (clock_gettime(CLOCK_MONOTONIC, &stage39_mutation_ts) != 0) {
-        ogs_error("STAGE39: clock_gettime failed");
-        cJSON_Delete(root);
-        return false;
-    }
-    stage39_mutation_ns =
-        (double)stage39_mutation_ts.tv_sec * 1000000000.0 +
-        (double)stage39_mutation_ts.tv_nsec;
-    cJSON_DeleteItemFromObjectCaseSensitive(
-        root, "stage39MutationMonotonicNs");
-    cJSON_AddNumberToObject(
-        root, "stage39MutationMonotonicNs", stage39_mutation_ns);
 
     serialized = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -477,10 +525,17 @@ static bool stage38_lab_instrument_discovery_response(
     response->http.content = owned;
     response->http.content_length = strlen(owned);
 
-    ogs_warn(
-        "STAGE39_NATIVE_NRF_MULTI_NF_MUTATION "
-        "type=%s tick=%lu kind=%s parameter=%d",
-        target_type, tick, entry->kind, entry->parameter);
+    if (changed) {
+        ogs_warn(
+            "STAGE39_NATIVE_NRF_MULTI_NF_MUTATION "
+            "type=%s tick=%lu kind=%s parameter=%d",
+            target_type, tick, entry->kind, entry->parameter);
+    }
+    if (kie_added) {
+        ogs_info(
+            "STAGE39_KIE_SBI_EXTENSION type=%s",
+            target_type);
+    }
     return true;
 }
 
