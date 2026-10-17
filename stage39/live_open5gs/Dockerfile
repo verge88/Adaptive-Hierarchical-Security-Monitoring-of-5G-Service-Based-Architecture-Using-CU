@@ -45,6 +45,7 @@ COPY stage38/external_testbed/*.yaml /opt/stage39/
 COPY stage39/live_open5gs/*.yaml /opt/stage39/
 COPY research/stage39_kie.py /opt/stage39/stage39_kie.py
 COPY stage39/live_open5gs/live_probe.py /opt/stage39/live_probe.py
+COPY stage39/live_open5gs/external_witness.py /opt/stage39/external_witness.py
 COPY stage39/full_profile_policy.json /opt/stage39/full_profile_policy.json
 COPY stage39/live_open5gs/live_policy.json /opt/stage39/live_policy.json
 
