@@ -14,7 +14,9 @@ from stage39_kie import (
     SecurityError,
     StreamRelationalVerifier,
     default_profiles,
+    lifecycle_case,
     mutate,
+    nearest_rank,
     sha256_json,
 )
 
@@ -35,48 +37,68 @@ class Stage39Tests(unittest.TestCase):
         expected = {"NSSF","AUSF","BSF","UDM","AMF","SMF","PCF","NRF","SCP"}
         self.assertEqual(expected,{v["nf_type"] for v in self.policy.slots.values()})
 
+    def test_stage38_two_instance_types_are_preserved(self):
+        for typ in ("NSSF","AUSF","BSF","UDM"):
+            with self.subTest(nf_type=typ):
+                self.assertEqual(2,sum(1 for row in self.policy.slots.values() if row["nf_type"]==typ))
+        self.assertEqual(13,len(self.policy.slots))
+
     def test_clean_profiles_are_accepted(self):
         self.assertEqual([],self.verifier.verify(self.profiles,self.witnesses))
 
-    def test_six_profile_mutations_are_detected(self):
-        for kind in ("identity","endpoint","service","fqdn","type","duplicate"):
-            with self.subTest(kind=kind):
-                self.assertTrue(self.verifier.verify(mutate(self.profiles,"nssf1",kind),self.witnesses))
+    def test_six_profile_mutations_are_detected_on_every_slot(self):
+        for slot in sorted(self.policy.slots):
+            for kind in ("identity","endpoint","service","fqdn","type","duplicate"):
+                with self.subTest(slot=slot,kind=kind):
+                    self.assertTrue(
+                        StreamRelationalVerifier(self.policy).verify(
+                            mutate(self.profiles,slot,kind),
+                            self.witnesses,
+                        )
+                    )
 
     def test_exact_duplicate_is_detected_even_during_transition(self):
-        self.verifier.begin_transition("restart","nssf1")
-        self.assertIn("duplicate_nfInstanceId",self.verifier.verify(mutate(self.profiles,"nssf1","duplicate"),self.witnesses))
+        for slot in sorted(self.policy.slots):
+            with self.subTest(slot=slot):
+                verifier=StreamRelationalVerifier(self.policy)
+                verifier.begin_transition("restart",slot)
+                alerts=verifier.verify(mutate(self.profiles,slot,"duplicate"),self.witnesses)
+                self.assertIn("duplicate_nfInstanceId",alerts)
 
     def test_stable_slot_absence_is_rejected_during_transition(self):
-        self.verifier.begin_transition("restart","nssf1")
-        profiles=[p for p in self.profiles if p["slot"]!="nssf2"]
-        witness={k:v for k,v in self.witnesses.items() if k!="nssf2"}
-        self.assertIn("missing_stable_slot:nssf2",self.verifier.verify(profiles,witness))
+        moving="nssf1"
+        stable="nssf2"
+        self.verifier.begin_transition("restart",moving)
+        profiles=[p for p in self.profiles if p["slot"]!=stable]
+        witness={k:v for k,v in self.witnesses.items() if k!=stable}
+        self.assertIn("missing_stable_slot:"+stable,self.verifier.verify(profiles,witness))
 
-    def test_moving_slot_absence_and_new_uuid_are_causally_allowed(self):
-        self.verifier.begin_transition("restart","nssf1")
-        profiles=[p for p in self.profiles if p["slot"]!="nssf1"]
-        witness={k:v for k,v in self.witnesses.items() if k!="nssf1"}
-        self.assertEqual([],self.verifier.verify(profiles,witness))
-        changed=copy.deepcopy(self.profiles)
-        p=next(x for x in changed if x["slot"]=="nssf1")
-        p["nfInstanceId"]="11111111-1111-1111-1111-111111111111"
-        witness=copy.deepcopy(self.witnesses)
-        witness["nssf1"]["nf_instance_id"]=p["nfInstanceId"]
-        self.assertEqual([],self.verifier.verify(changed,witness))
+    def test_stop_start_restart_are_causal_on_every_slot(self):
+        for slot in sorted(self.policy.slots):
+            with self.subTest(slot=slot):
+                self.assertEqual(
+                    {"stop":True,"start":True,"restart":True},
+                    lifecycle_case(self.policy,self.profiles,self.witnesses,slot),
+                )
 
-    def test_persistent_registry_poisoning_survives_reopen_and_is_detected(self):
+    def test_persistent_fqdn_and_service_poisoning_detected_on_every_slot(self):
         with tempfile.TemporaryDirectory() as td:
-            reg=PersistentRegistry(Path(td)/"registry.json")
-            reg.write(self.profiles)
-            reg.write(mutate(reg.read(),"nssf1","fqdn"))
-            reopened=PersistentRegistry(reg.path).read()
-            self.assertIn("semantic_mismatch:nssf1",self.verifier.verify(reopened,self.witnesses))
+            for slot in sorted(self.policy.slots):
+                for kind in ("fqdn","service"):
+                    with self.subTest(slot=slot,kind=kind):
+                        path=Path(td)/f"{slot}-{kind}.json"
+                        reg=PersistentRegistry(path)
+                        reg.write(mutate(self.profiles,slot,kind))
+                        reopened=PersistentRegistry(path).read()
+                        alerts=StreamRelationalVerifier(self.policy).verify(reopened,self.witnesses)
+                        self.assertIn("semantic_mismatch:"+slot,alerts)
 
     def test_witness_uuid_mismatch_is_rejected(self):
-        witness=copy.deepcopy(self.witnesses)
-        witness["nssf1"]["nf_instance_id"]="ffffffff-ffff-ffff-ffff-ffffffffffff"
-        self.assertIn("witness_uuid:nssf1",self.verifier.verify(self.profiles,witness))
+        for slot in sorted(self.policy.slots):
+            with self.subTest(slot=slot):
+                witness=copy.deepcopy(self.witnesses)
+                witness[slot]["nf_instance_id"]="ffffffff-ffff-ffff-ffff-ffffffffffff"
+                self.assertIn("witness_uuid:"+slot,self.verifier.verify(self.profiles,witness))
 
     def test_freshness_anchor_recovers_primary_from_sealed_mirror(self):
         with tempfile.TemporaryDirectory() as td:
@@ -102,24 +124,43 @@ class Stage39Tests(unittest.TestCase):
             req.verify(key,FreshnessAnchor(anchor_path),self.policy.digest,digest,now)
             with self.assertRaises(SecurityError):
                 req.verify(key,FreshnessAnchor(anchor_path),self.policy.digest,digest,now)
-            tampered=KIERequest(req.controller_id,req.subject_id,req.cycle+1,req.issued_at_ms,"11"*16,req.policy_sha256,"0"*64,req.mac)
+            tampered=KIERequest(
+                req.controller_id,req.subject_id,req.cycle+1,req.issued_at_ms,
+                "11"*16,req.policy_sha256,"0"*64,req.mac
+            )
             with self.assertRaises(SecurityError):
-                tampered.verify(key,FreshnessAnchor(Path(td)/"tamper.json"),self.policy.digest,"0"*64,now)
-            stale=KIERequest.create("v","nssf2",1,self.policy.digest,digest,key,now-60_000,"22"*16)
+                tampered.verify(
+                    key,FreshnessAnchor(Path(td)/"tamper.json"),
+                    self.policy.digest,"0"*64,now
+                )
+            stale=KIERequest.create(
+                "v","nssf2",1,self.policy.digest,digest,key,now-60_000,"22"*16
+            )
             with self.assertRaises(SecurityError):
-                stale.verify(key,FreshnessAnchor(Path(td)/"stale.json"),self.policy.digest,digest,now)
+                stale.verify(
+                    key,FreshnessAnchor(Path(td)/"stale.json"),
+                    self.policy.digest,digest,now
+                )
 
     def test_kie_response_is_bound_to_request(self):
         subject_key=hashlib.sha256(b"subject").digest()
         controller_key=hashlib.sha256(b"controller").digest()
         now=int(time.time()*1000)
         digest=sha256_json(self.profiles)
-        req=KIERequest.create("v","nssf1",1,self.policy.digest,digest,controller_key,now,"33"*16)
+        req=KIERequest.create(
+            "v","nssf1",1,self.policy.digest,digest,controller_key,now,"33"*16
+        )
         response=KIEResponse.create(req,{"profile_digest":digest},subject_key,now)
         response.verify(subject_key,req,now)
-        wrong=KIERequest.create("v","nssf1",2,self.policy.digest,digest,controller_key,now,"44"*16)
+        wrong=KIERequest.create(
+            "v","nssf1",2,self.policy.digest,digest,controller_key,now,"44"*16
+        )
         with self.assertRaises(SecurityError):
             response.verify(subject_key,wrong,now)
+
+    def test_p95_uses_nearest_rank_on_nontrivial_sample(self):
+        values=list(range(1,79))
+        self.assertEqual(75,nearest_rank(values,0.95))
 
 
 if __name__ == "__main__":
