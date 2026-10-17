@@ -35,7 +35,7 @@
  *   <NF_TYPE> TAB <local discovery tick> TAB <kind> TAB <parameter>
  *
  * Parameter encoding:
- *   slot_code * 100 + variant, where slot_code identifies one of the twelve
+ *   slot_code * 100 + variant, where slot_code identifies one of the thirteen
  *   discovery-visible Open5GS NF processes and variant is 1..4.
  */
 #include <stdio.h>
