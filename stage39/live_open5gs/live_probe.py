@@ -600,6 +600,64 @@ def write_mutation_plan():
     MUTATION_ENABLE.touch()
 
 
+
+def atomic_json_write(path,doc):
+    path=Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_suffix(path.suffix+".tmp")
+    tmp.write_text(
+        json.dumps(doc,sort_keys=True)+"\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def wait_external_mutation_trigger(
+    control_dir,sequence,nf_type,kind,variant,timeout_seconds=180
+):
+    control_dir=Path(control_dir)
+    command=control_dir/"command.json"
+    deadline=time.monotonic()+timeout_seconds
+    last=None
+    while time.monotonic()<deadline:
+        if command.exists():
+            try:
+                doc=json.loads(command.read_text(encoding="utf-8"))
+                last=doc
+                if (
+                    int(doc.get("sequence",-1))==sequence
+                    and doc.get("target_nf_type")==nf_type
+                    and doc.get("kind")==kind
+                    and int(doc.get("variant",-1))==variant
+                ):
+                    onset=int(doc.get("onset_monotonic_ns",0))
+                    if onset<=0:
+                        raise RuntimeError("external trigger has no onset timestamp")
+                    return doc
+            except Exception as exc:
+                last={"error":f"{type(exc).__name__}: {exc}"}
+        time.sleep(0.002)
+    raise RuntimeError(
+        f"external mutation trigger timeout sequence={sequence} "
+        f"expected={nf_type}/{kind}/v{variant} last={last}"
+    )
+
+
+def acknowledge_external_mutation(
+    control_dir,sequence,detected,detection_monotonic_ns,alerts
+):
+    atomic_json_write(
+        Path(control_dir)/"ack.json",
+        {
+            "schema":"stage39-external-mutation-ack-v1",
+            "sequence":sequence,
+            "detected":bool(detected),
+            "detection_monotonic_ns":int(detection_monotonic_ns),
+            "alerts":list(alerts),
+        },
+    )
+
+
 async def clean_discovery_snapshot(expected=None):
     expected=expected or EXPECTED_DISCOVERY
     result={}
@@ -613,14 +671,17 @@ async def clean_discovery_snapshot(expected=None):
     return result
 
 
-async def run_native_mutations(clean,witness,policy):
+async def run_native_mutations(clean,witness,policy,external_control=None):
     write_mutation_plan()
     cases=mutation_cases()
     matrix={}
     request_latencies=[]
     mutation_latencies=[]
+    external_onset_latencies=[]
     article_detected=0
     boundary_detected=0
+    sequence=0
+    ablation={}
     try:
         for typ in EXPECTED_DISCOVERY:
             slot,_=MUTATION_TARGET_SLOT[typ]
@@ -630,6 +691,12 @@ async def run_native_mutations(clean,witness,policy):
                 kind=case["kind"]
                 variant=case["variant"]
                 label=f"{kind}:v{variant}"
+                sequence+=1
+                external_trigger=None
+                if external_control is not None:
+                    external_trigger=wait_external_mutation_trigger(
+                        external_control,sequence,typ,kind,variant
+                    )
                 started=time.perf_counter_ns()
                 doc=await discover_document(typ)
                 rows=doc["nfInstances"]
@@ -639,12 +706,18 @@ async def run_native_mutations(clean,witness,policy):
                         f"native mutation not observed: {typ}/{label}"
                     )
                 validate_family_change(kind,clean[typ],rows,endpoint)
-                policy_alerts=live_policy_alerts(
-                    typ,rows,witness,policy
+                combined_alerts=live_policy_alerts(
+                    typ,rows,witness,policy,include_witness=True
                 )
-                if not policy_alerts:
+                policy_only_alerts=live_policy_alerts(
+                    typ,rows,witness,policy,include_witness=False
+                )
+                witness_only_alerts=live_witness_only_alerts(
+                    typ,rows,witness
+                )
+                if not combined_alerts:
                     raise RuntimeError(
-                        f"independent live policy missed {typ}/{label}"
+                        f"combined live detector missed {typ}/{label}"
                     )
                 detected_ns=time.monotonic_ns()
                 elapsed=(time.perf_counter_ns()-started)/1_000_000
@@ -660,14 +733,48 @@ async def run_native_mutations(clean,witness,policy):
                     raise RuntimeError(
                         f"negative mutation latency: {typ}/{label}"
                     )
+                external_to_detection=None
+                if external_trigger is not None:
+                    external_to_detection=(
+                        detected_ns-int(
+                            external_trigger["onset_monotonic_ns"]
+                        )
+                    )/1_000_000
+                    if external_to_detection < 0:
+                        raise RuntimeError(
+                            f"negative external onset latency: {typ}/{label}"
+                        )
+                    external_onset_latencies.append(external_to_detection)
+                    acknowledge_external_mutation(
+                        external_control,sequence,True,detected_ns,
+                        combined_alerts
+                    )
+                family_key=kind
+                row=ablation.setdefault(
+                    family_key,
+                    {
+                        "cases":0,
+                        "policy_only_detected":0,
+                        "witness_only_detected":0,
+                        "combined_detected":0,
+                    },
+                )
+                row["cases"]+=1
+                row["policy_only_detected"]+=int(bool(policy_only_alerts))
+                row["witness_only_detected"]+=int(bool(witness_only_alerts))
+                row["combined_detected"]+=1
                 matrix[typ][label]={
                     "detected":True,
                     "kind":kind,
                     "variant":variant,
                     "article_family":case["article_family"],
-                    "policy_alerts":policy_alerts,
+                    "policy_only_alerts":policy_only_alerts,
+                    "witness_only_alerts":witness_only_alerts,
+                    "combined_alerts":combined_alerts,
                     "discovery_request_to_detection_ms":elapsed,
                     "mutation_to_detection_ms":mutation_to_detection,
+                    "external_controller_onset_to_detection_ms":
+                        external_to_detection,
                 }
                 if case["article_family"]:
                     article_detected+=1
@@ -734,6 +841,20 @@ async def run_native_mutations(clean,witness,policy):
         "clean_restored_after_hook":restored_equal,
         "restored_policy_alerts":restored_policy_alerts,
         "native_marker_count":marker_count,
+        "witness_ablation":{
+            "by_family":ablation,
+            "identity_policy_only_misses":
+                ablation.get("identity_replacement",{}).get(
+                    "cases",0
+                )-
+                ablation.get("identity_replacement",{}).get(
+                    "policy_only_detected",0
+                ),
+            "identity_witness_detected":
+                ablation.get("identity_replacement",{}).get(
+                    "witness_only_detected",0
+                ),
+        },
         "timing_ms":{
             "sample_count":len(request_latencies),
             "discovery_request_to_detection":{
@@ -746,10 +867,27 @@ async def run_native_mutations(clean,witness,policy):
             "mutation_application_to_detection":{
                 "scope":
                     "CLOCK_MONOTONIC timestamp injected by NRF immediately "
-                    "after profile mutation through independent-policy alert",
+                    "after profile mutation through combined detector alert",
                 "median":statistics.median(mutation_latencies),
                 "p95_nearest_rank":nearest_rank(mutation_latencies,0.95),
                 "max":max(mutation_latencies),
+            },
+            "external_controller_onset_to_detection":{
+                "scope":
+                    "CLOCK_MONOTONIC timestamp emitted by a separate "
+                    "sidecar immediately before it triggers each live "
+                    "mutation request; includes sidecar handoff, discovery, "
+                    "NRF response mutation and combined detection",
+                "sample_count":len(external_onset_latencies),
+                "median":
+                    statistics.median(external_onset_latencies)
+                    if external_onset_latencies else None,
+                "p95_nearest_rank":
+                    nearest_rank(external_onset_latencies,0.95)
+                    if external_onset_latencies else None,
+                "max":
+                    max(external_onset_latencies)
+                    if external_onset_latencies else None,
             },
         },
     }
