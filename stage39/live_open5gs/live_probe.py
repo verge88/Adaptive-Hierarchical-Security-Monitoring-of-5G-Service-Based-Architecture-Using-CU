@@ -993,7 +993,8 @@ async def run_persistent_registration_poisoning(clean,witness,policy):
 
 async def main_async(
     output,external_witness=None,external_public_key=None,
-    external_challenge=None
+    external_challenge=None,external_mutation_control=None,
+    policy_public_key=None,policy_signature=None
 ):
     output.mkdir(parents=True,exist_ok=True)
     LOG.mkdir(parents=True,exist_ok=True)
@@ -1078,7 +1079,7 @@ async def main_async(
             clean,witness,live_policy
         )
         native_mutations=await run_native_mutations(
-            clean,witness,live_policy
+            clean,witness,live_policy,external_mutation_control
         )
 
         live_evidence={
@@ -1218,6 +1219,8 @@ async def main_async(
                     native_mutations["native_marker_count"],
                 "clean_restored_after_hook":
                     native_mutations["clean_restored_after_hook"],
+                "witness_ablation":
+                    native_mutations["witness_ablation"],
                 "timing_ms":native_mutations["timing_ms"],
             },
             "kie_bound_to_live_evidence":True,
@@ -1231,9 +1234,10 @@ async def main_async(
                 "NRF is included through its live self-profile returned by "
                 "NRF discovery and is mutated by the same native response hook "
                 "used for the other discoverable NF types.",
-                "Mutation-to-detection timing begins at instrumentation inside "
-                "the NRF response-mutation path; it is not an external "
-                "attacker-onset timestamp.",
+                "NRF-hook timing begins inside the response-mutation path. "
+                "A separate sidecar-controller onset metric is also recorded, "
+                "but it is still a laboratory trigger timestamp rather than "
+                "a timestamp from an uncontrolled remote adversary.",
                 "Live Open5GS mTLS is validated by a dedicated second "
                 "pass in the same workflow; OAuth2 and SEPP-like checks remain "
                 "separate and are not 3GPP conformance tests.",
@@ -1284,7 +1288,19 @@ async def main_async(
             f"{mutation_timing['median']:.3f} / "
             f"{mutation_timing['p95_nearest_rank']:.3f} / "
             f"{mutation_timing['max']:.3f} ms\n"
-            f"- KIE bound to live evidence: "
+            f"- Witness ablation identity policy-only misses / "
+            f"witness-only detections: "
+            f"{native_mutations['witness_ablation']['identity_policy_only_misses']}/"
+            f"{native_mutations['witness_ablation']['identity_witness_detected']}\n"
+            + (
+                f"- External sidecar onset-to-detection median / p95 / max: "
+                f"{timing['external_controller_onset_to_detection']['median']:.3f} / "
+                f"{timing['external_controller_onset_to_detection']['p95_nearest_rank']:.3f} / "
+                f"{timing['external_controller_onset_to_detection']['max']:.3f} ms\n"
+                if timing['external_controller_onset_to_detection']['sample_count']
+                else ""
+            )
+            + f"- KIE bound to live evidence: "
             f"{report['kie_bound_to_live_evidence']}\n"
         )
         print(json.dumps(report,indent=2,ensure_ascii=False))
@@ -1299,12 +1315,18 @@ def main():
     ap.add_argument("--external-witness",type=Path)
     ap.add_argument("--external-witness-public-key",type=Path)
     ap.add_argument("--external-witness-challenge",type=Path)
+    ap.add_argument("--external-mutation-control",type=Path)
+    ap.add_argument("--policy-public-key",type=Path)
+    ap.add_argument("--policy-signature",type=Path)
     args=ap.parse_args()
     asyncio.run(main_async(
         args.output,
         args.external_witness,
         args.external_witness_public_key,
         args.external_witness_challenge,
+        args.external_mutation_control,
+        args.policy_public_key,
+        args.policy_signature,
     ))
 
 
