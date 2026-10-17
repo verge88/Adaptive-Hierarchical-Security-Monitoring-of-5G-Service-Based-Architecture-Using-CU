@@ -81,19 +81,19 @@ def prepare_pki():
 
 
 def tls_block():
-    return f"""default:
-  tls:
-    server:
-      scheme: https
-      private_key: {TLS_ROOT/'core.key'}
-      cert: {TLS_ROOT/'core.crt'}
-      verify_client: true
-      verify_client_cacert: {TLS_ROOT/'ca.crt'}
-    client:
-      scheme: https
-      cacert: {TLS_ROOT/'ca.crt'}
-      client_private_key: {TLS_ROOT/'core.key'}
-      client_cert: {TLS_ROOT/'core.crt'}
+    return f"""  default:
+    tls:
+      server:
+        scheme: https
+        private_key: {TLS_ROOT/'core.key'}
+        cert: {TLS_ROOT/'core.crt'}
+        verify_client: true
+        verify_client_cacert: {TLS_ROOT/'ca.crt'}
+      client:
+        scheme: https
+        cacert: {TLS_ROOT/'ca.crt'}
+        client_private_key: {TLS_ROOT/'core.key'}
+        client_cert: {TLS_ROOT/'core.crt'}
 
 """
 
@@ -111,7 +111,7 @@ def prepare_configs():
         endpoint:f"{slot}.stage39.test"
         for slot,(_,_,_,endpoint) in PROCESSES.items()
     }
-    for _,config,_,_ in PROCESSES.values():
+    for _,config,nf_type,_ in PROCESSES.values():
         source=ROOT/config
         text=source.read_text()
         text=text.replace("http://","https://")
@@ -122,7 +122,15 @@ def prepare_configs():
                 f"https://{endpoint}:443",
                 f"https://{name}:443",
             )
-        (CONFIG_ROOT/config).write_text(tls_block()+text)
+        local_key=nf_type.lower()
+        needle=f"{local_key}:\n"
+        if needle not in text:
+            raise RuntimeError(
+                f"cannot inject TLS defaults into {config}: "
+                f"missing {local_key}: section"
+            )
+        text=text.replace(needle,needle+tls_block(),1)
+        (CONFIG_ROOT/config).write_text(text)
 
 
 def tcp_ready(host,port=PORT,timeout=0.3):
