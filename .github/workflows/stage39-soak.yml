@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 390
     env:
-      SOAK_MINUTES: \${{ github.event_name == 'pull_request' && '1' || github.event_name == 'workflow_dispatch' && inputs.soak_minutes || '30' }}
+      SOAK_MINUTES: ${{ github.event_name == 'pull_request' && '1' || github.event_name == 'workflow_dispatch' && inputs.soak_minutes || '30' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
