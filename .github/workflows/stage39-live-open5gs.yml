@@ -7,7 +7,6 @@ on:
       - 'stage39/full_profile_policy.json'
       - 'research/stage39_kie.py'
       - 'stage38/patch_sbi_context.py'
-      - 'live/stage38-nnrf-handler.c'
       - 'stage38/external_testbed/*.yaml'
   workflow_dispatch:
 permissions:
@@ -30,7 +29,8 @@ jobs:
           docker run -d --name stage39-mongo --network host mongo:7 \
             --bind_ip 127.0.0.1 --port 27017
           for attempt in $(seq 1 60); do
-            if docker exec stage39-mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
+            if docker exec stage39-mongo mongosh --quiet \
+              --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
               exit 0
             fi
             sleep 1
@@ -41,22 +41,68 @@ jobs:
       - name: Build Open5GS v2.7.6 Stage39 image
         run: docker build -f stage39/live_open5gs/Dockerfile -t stage39-live-open5gs .
 
-      - name: Run thirteen-process live Open5GS probe
+      - name: Run live core with independent witness sidecar
         run: |
           set -euo pipefail
-          mkdir -p stage39_live_out
-          docker run --rm --network host --privileged \
-            -v "$PWD/stage39_live_out:/out" \
-            stage39-live-open5gs
-          cat stage39_live_out/live_open5gs_report.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p \
+            stage39_live_out \
+            stage39_live_control \
+            stage39_live_witness \
+            stage39_live_keys
 
-      - name: MongoDB diagnostics
+          openssl ecparam -name prime256v1 -genkey -noout \
+            -out stage39_live_keys/witness.key
+          openssl ec -in stage39_live_keys/witness.key -pubout \
+            -out stage39_live_keys/witness.pub
+          openssl rand -hex 32 > stage39_live_keys/challenge.txt
+          chmod 600 stage39_live_keys/witness.key
+
+          docker run -d --name stage39-core --network host \
+            -v "$PWD/stage39_live_out:/out" \
+            -v "$PWD/stage39_live_control:/control" \
+            -v "$PWD/stage39_live_witness:/run/stage39/witness" \
+            -v "$PWD/stage39_live_keys/witness.pub:/keys/witness.pub:ro" \
+            -v "$PWD/stage39_live_keys/challenge.txt:/keys/challenge.txt:ro" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/live_probe.py \
+              --output /out \
+              --external-witness /control/external_witness.json \
+              --external-witness-public-key /keys/witness.pub \
+              --external-witness-challenge /keys/challenge.txt
+
+          sidecar_rc=0
+          docker run --rm \
+            --pid=container:stage39-core \
+            --network host \
+            -v "$PWD/stage39_live_control:/control" \
+            -v "$PWD/stage39_live_witness:/run/stage39/witness:ro" \
+            -v "$PWD/stage39_live_keys/witness.key:/keys/witness.key:ro" \
+            -v "$PWD/stage39_live_keys/challenge.txt:/keys/challenge.txt:ro" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/external_witness.py \
+              --output /control/external_witness.json \
+              --private-key /keys/witness.key \
+              --challenge /keys/challenge.txt \
+              --timeout-seconds 60 || sidecar_rc=$?
+
+          core_rc=$(docker wait stage39-core)
+          docker logs stage39-core
+          test "$sidecar_rc" -eq 0
+          test "$core_rc" -eq 0
+          cat stage39_live_out/live_open5gs_report.md \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Core and MongoDB diagnostics
         if: failure()
-        run: docker logs stage39-mongo || true
+        run: |
+          docker logs stage39-core || true
+          docker logs stage39-mongo || true
 
       - name: Cleanup
         if: always()
-        run: docker rm -f stage39-mongo >/dev/null 2>&1 || true
+        run: |
+          docker rm -f stage39-core >/dev/null 2>&1 || true
+          docker rm -f stage39-mongo >/dev/null 2>&1 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
