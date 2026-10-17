@@ -48,6 +48,7 @@ jobs:
             stage39_live_out \
             stage39_live_control \
             stage39_live_witness \
+            stage39_live_attack_control \
             stage39_live_keys
 
           openssl ecparam -name prime256v1 -genkey -noout \
@@ -55,20 +56,42 @@ jobs:
           openssl ec -in stage39_live_keys/witness.key -pubout \
             -out stage39_live_keys/witness.pub
           openssl rand -hex 32 > stage39_live_keys/challenge.txt
-          chmod 600 stage39_live_keys/witness.key
+
+          openssl ecparam -name prime256v1 -genkey -noout \
+            -out stage39_live_keys/policy.key
+          openssl ec -in stage39_live_keys/policy.key -pubout \
+            -out stage39_live_keys/policy.pub
+          openssl dgst -sha256 \
+            -sign stage39_live_keys/policy.key \
+            -out stage39_live_keys/live_policy.sig \
+            stage39/live_open5gs/live_policy.json
+          openssl dgst -sha256 \
+            -verify stage39_live_keys/policy.pub \
+            -signature stage39_live_keys/live_policy.sig \
+            stage39/live_open5gs/live_policy.json
+
+          chmod 600 \
+            stage39_live_keys/witness.key \
+            stage39_live_keys/policy.key
 
           docker run -d --name stage39-core --network host \
             -v "$PWD/stage39_live_out:/out" \
             -v "$PWD/stage39_live_control:/control" \
             -v "$PWD/stage39_live_witness:/run/stage39/witness" \
+            -v "$PWD/stage39_live_attack_control:/attack-control" \
             -v "$PWD/stage39_live_keys/witness.pub:/keys/witness.pub:ro" \
             -v "$PWD/stage39_live_keys/challenge.txt:/keys/challenge.txt:ro" \
+            -v "$PWD/stage39_live_keys/policy.pub:/keys/policy.pub:ro" \
+            -v "$PWD/stage39_live_keys/live_policy.sig:/keys/live_policy.sig:ro" \
             stage39-live-open5gs \
             python3 /opt/stage39/live_probe.py \
               --output /out \
               --external-witness /control/external_witness.json \
               --external-witness-public-key /keys/witness.pub \
-              --external-witness-challenge /keys/challenge.txt
+              --external-witness-challenge /keys/challenge.txt \
+              --external-mutation-control /attack-control \
+              --policy-public-key /keys/policy.pub \
+              --policy-signature /keys/live_policy.sig
 
           sidecar_rc=0
           docker run --rm \
@@ -85,10 +108,21 @@ jobs:
               --challenge /keys/challenge.txt \
               --timeout-seconds 60 || sidecar_rc=$?
 
+          driver_rc=0
+          docker run --rm \
+            -v "$PWD/stage39_live_attack_control:/attack-control" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/external_attack_driver.py \
+              --control-dir /attack-control \
+              --timeout-seconds 180 || driver_rc=$?
+
           core_rc=$(docker wait stage39-core)
           docker logs stage39-core
           test "$sidecar_rc" -eq 0
+          test "$driver_rc" -eq 0
           test "$core_rc" -eq 0
+          cp stage39_live_attack_control/driver_report.json \
+            stage39_live_out/external_driver_report.json
           cat stage39_live_out/live_open5gs_report.md \
             >> "$GITHUB_STEP_SUMMARY"
 
