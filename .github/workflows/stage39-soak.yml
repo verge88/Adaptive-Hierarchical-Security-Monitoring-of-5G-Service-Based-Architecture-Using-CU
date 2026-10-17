@@ -1,5 +1,11 @@
 name: Stage39 configurable clean soak
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage39-soak.yml'
+      - 'research/stage39_kie.py'
+      - 'research/test_stage39_kie.py'
+      - 'stage39/full_profile_policy.json'
   schedule:
     - cron: '17 3 1 * *'
   workflow_dispatch:
@@ -16,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 390
     env:
-      SOAK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.soak_minutes || '30' }}
+      SOAK_MINUTES: \${{ github.event_name == 'pull_request' && '1' || github.event_name == 'workflow_dispatch' && inputs.soak_minutes || '30' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,11 +37,14 @@ jobs:
           test "$SOAK_MINUTES" -ge 1
           test "$SOAK_MINUTES" -le 360
 
-      - name: Long clean streaming soak with KIE-capable verifier
+      - name: Clean streaming soak with KIE-capable verifier
         run: |
           mkdir -p stage39_soak
           seconds=$((SOAK_MINUTES * 60))
-          python research/stage39_kie.py             --policy stage39/full_profile_policy.json             --output stage39_soak             --soak-seconds "$seconds"
+          python research/stage39_kie.py \
+            --policy stage39/full_profile_policy.json \
+            --output stage39_soak \
+            --soak-seconds "$seconds"
 
       - name: Publish soak summary
         if: always()
@@ -44,6 +53,7 @@ jobs:
             echo '## Stage39 configurable soak'
             echo
             echo "Requested minutes: $SOAK_MINUTES"
+            echo "PR validation uses 1 minute; scheduled/manual runs use the requested longer duration."
             test -f stage39_soak/stage39_report.md && cat stage39_soak/stage39_report.md || true
           } >> "$GITHUB_STEP_SUMMARY"
 
