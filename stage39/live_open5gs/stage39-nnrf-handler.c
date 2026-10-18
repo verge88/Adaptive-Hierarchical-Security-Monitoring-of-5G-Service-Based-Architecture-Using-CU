@@ -42,7 +42,6 @@
 
 #define STAGE38_ENABLE_PATH "/run/stage38/enabled"
 #define STAGE38_PLAN_PATH "/run/stage38/plan.tsv"
-#define STAGE39_KIE_EXTENSION_PATH "/run/stage39/kie-extension.json"
 #define STAGE38_MAX_PLAN 8192
 #define STAGE38_KIND_LEN 48
 #define STAGE38_TYPE_LEN 16
@@ -379,23 +378,6 @@ static bool stage39_duplicate_profile(
     return true;
 }
 
-static cJSON *stage39_load_kie_extension(void)
-{
-    FILE *fp = NULL;
-    char buffer[8192];
-    size_t length = 0;
-
-    fp = fopen(STAGE39_KIE_EXTENSION_PATH, "r");
-    if (!fp)
-        return NULL;
-    length = fread(buffer, 1, sizeof(buffer)-1, fp);
-    fclose(fp);
-    if (!length || length >= sizeof(buffer)-1)
-        return NULL;
-    buffer[length] = '\0';
-    return cJSON_Parse(buffer);
-}
-
 static bool stage38_lab_instrument_discovery_response(
         ogs_sbi_response_t *response, OpenAPI_nf_type_e target_nf_type)
 {
@@ -403,7 +385,6 @@ static bool stage38_lab_instrument_discovery_response(
     unsigned long *counter = NULL;
     cJSON *root = NULL;
     cJSON *instances = NULL;
-    cJSON *kie_extension = NULL;
     stage38_plan_entry_t *entry = NULL;
     char *serialized = NULL;
     char *owned = NULL;
@@ -411,16 +392,13 @@ static bool stage38_lab_instrument_discovery_response(
     struct timespec stage39_mutation_ts;
     double stage39_mutation_ns = 0;
     bool changed = false;
-    bool kie_added = false;
     bool mutation_enabled =
         access(STAGE38_ENABLE_PATH, F_OK) == 0;
-    bool kie_enabled =
-        access(STAGE39_KIE_EXTENSION_PATH, F_OK) == 0;
 
     if (!response ||
         response->status != OGS_SBI_HTTP_STATUS_OK ||
         !response->http.content || !response->http.content_length ||
-        (!mutation_enabled && !kie_enabled))
+        !mutation_enabled)
         return false;
 
     root = cJSON_Parse(response->http.content);
@@ -430,21 +408,6 @@ static bool stage38_lab_instrument_discovery_response(
     if (!cJSON_IsArray(instances)) {
         cJSON_Delete(root);
         return false;
-    }
-
-    if (kie_enabled) {
-        kie_extension = stage39_load_kie_extension();
-        if (kie_extension) {
-            cJSON_DeleteItemFromObjectCaseSensitive(
-                root, "x-stage39-kie");
-            cJSON_AddItemToObject(
-                root, "x-stage39-kie", kie_extension);
-            kie_added = true;
-        } else {
-            ogs_error(
-                "STAGE39: cannot parse KIE SBI extension [%s]",
-                STAGE39_KIE_EXTENSION_PATH);
-        }
     }
 
     if (mutation_enabled) {
@@ -508,7 +471,7 @@ static bool stage38_lab_instrument_discovery_response(
         }
     }
 
-    if (!changed && !kie_added) {
+    if (!changed) {
         cJSON_Delete(root);
         return false;
     }
@@ -530,11 +493,6 @@ static bool stage38_lab_instrument_discovery_response(
             "STAGE39_NATIVE_NRF_MULTI_NF_MUTATION "
             "type=%s tick=%lu kind=%s parameter=%d",
             target_type, tick, entry->kind, entry->parameter);
-    }
-    if (kie_added) {
-        ogs_info(
-            "STAGE39_KIE_SBI_EXTENSION type=%s",
-            target_type);
     }
     return true;
 }
