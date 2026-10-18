@@ -307,6 +307,7 @@ async def main_async(args):
                 "cycle": index, "slot": slot, "kind": "benign_real_restart",
                 "decisions": {"lifecycle_full_policy": False,
                               "policy_plus_independent_witness": False},
+                "observed_discovery_rows": fresh_rows,
             })
             restarts.append({
                 "slot": slot, "nf_type": nf_type, "operation": "signed_restart",
@@ -356,6 +357,7 @@ async def main_async(args):
                               "policy_plus_independent_witness": bool(proposal_alerts)},
                 "baseline_alerts": baseline_alerts,
                 "proposed_alerts": proposal_alerts,
+                "observed_discovery_rows": spoofed_rows,
             })
             # Native hook must not poison persisted NRF records.
             await await_live_convergence(nf_type, slot, signed_witness, policy)
