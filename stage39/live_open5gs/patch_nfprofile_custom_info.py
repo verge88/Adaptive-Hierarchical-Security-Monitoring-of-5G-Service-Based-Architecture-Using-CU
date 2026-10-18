@@ -92,7 +92,17 @@ replace_once(
     "    NFProfile->nf_instance_id = nf_instance->id;\n"
     "    NFProfile->nf_type = nf_instance->nf_type;\n"
     "    NFProfile->nf_status = nf_instance->nf_status;\n"
-    "    NFProfile->custom_info = stage39_custom_info_from_env();\n",
+    "    if (nf_instance->custom_info) {\n"
+    "        cJSON *stage39_json =\n"
+    "            OpenAPI_object_convertToJSON(nf_instance->custom_info);\n"
+    "        if (stage39_json) {\n"
+    "            NFProfile->custom_info =\n"
+    "                OpenAPI_object_parseFromJSON(stage39_json);\n"
+    "            cJSON_Delete(stage39_json);\n"
+    "        }\n"
+    "    } else {\n"
+    "        NFProfile->custom_info = stage39_custom_info_from_env();\n"
+    "    }\n",
 )
 
 replace_once(
