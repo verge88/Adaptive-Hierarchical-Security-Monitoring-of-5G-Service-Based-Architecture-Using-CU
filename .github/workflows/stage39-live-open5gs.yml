@@ -5,6 +5,7 @@ on:
       - '.github/workflows/stage39-live-open5gs.yml'
       - 'stage39/live_open5gs/**'
       - 'stage39/full_profile_policy.json'
+      - 'article/STAGE39_KIE_IMPLEMENTATION.md'
       - 'research/stage39_kie.py'
       - 'stage38/patch_sbi_context.py'
       - 'stage38/external_testbed/*.yaml'
