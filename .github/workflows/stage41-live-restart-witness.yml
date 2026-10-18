@@ -1,0 +1,137 @@
+name: Stage41 LIVE NF restart with independent signed witness
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage41-live-restart-witness.yml'
+      - 'stage39/live_open5gs/stage41_*'
+      - 'stage39/live_open5gs/Dockerfile'
+      - 'stage39/live_open5gs/external_witness.py'
+      - 'stage39/live_open5gs/live_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  open5gs-real-restarts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MongoDB for Open5GS PCF
+        run: |
+          set -euo pipefail
+          docker run -d --name stage41-mongo --network host mongo:7 --bind_ip 127.0.0.1 --port 27017
+          for i in $(seq 1 75); do
+            if docker exec stage41-mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs stage41-mongo
+          exit 1
+
+      - name: Build Open5GS 2.7.6 with native NRF discovery mutation hook
+        run: docker build -f stage39/live_open5gs/Dockerfile -t stage41-live-open5gs .
+
+      - name: Issue independent policy, lifecycle and witness signing keys
+        run: |
+          set -euo pipefail
+          mkdir -p stage41_live_out stage41_live_control stage41_live_witness stage41_live_keys
+          for purpose in policy lifecycle witness; do
+            openssl ecparam -name prime256v1 -genkey -noout -out "stage41_live_keys/${purpose}.key"
+            openssl ec -in "stage41_live_keys/${purpose}.key" -pubout -out "stage41_live_keys/${purpose}.pub"
+            chmod 600 "stage41_live_keys/${purpose}.key"
+          done
+          openssl dgst -sha256 -sign stage41_live_keys/policy.key \
+            -out stage41_live_keys/live_policy.sig stage39/live_open5gs/live_policy.json
+          openssl dgst -sha256 -verify stage41_live_keys/policy.pub \
+            -signature stage41_live_keys/live_policy.sig stage39/live_open5gs/live_policy.json
+          docker run --rm --network host \
+            -v "$PWD/stage41_live_control:/control" \
+            -v "$PWD/stage41_live_keys/lifecycle.key:/keys/lifecycle.key:ro" \
+            stage41-live-open5gs \
+            python3 /opt/stage39/stage41_lifecycle_authority.py \
+              --policy /opt/stage39/live_policy.json \
+              --key /keys/lifecycle.key \
+              --out /control/lifecycle_events.json
+
+      - name: Run real NF restarts and independent-signed witness comparison
+        run: |
+          set -euo pipefail
+          docker run -d --name stage41-core --network host \
+            -v "$PWD/stage41_live_out:/out" \
+            -v "$PWD/stage41_live_control:/control" \
+            -v "$PWD/stage41_live_witness:/run/stage39/witness" \
+            -v "$PWD/stage41_live_keys/witness.pub:/keys/witness.pub:ro" \
+            -v "$PWD/stage41_live_keys/lifecycle.pub:/keys/lifecycle.pub:ro" \
+            -v "$PWD/stage41_live_keys/policy.pub:/keys/policy.pub:ro" \
+            -v "$PWD/stage41_live_keys/live_policy.sig:/keys/live_policy.sig:ro" \
+            stage41-live-open5gs \
+            python3 /opt/stage39/stage41_live_restart_compare.py \
+              --output /out --control-dir /control \
+              --witness-public /keys/witness.pub \
+              --lifecycle-public /keys/lifecycle.pub \
+              --lifecycle-events /control/lifecycle_events.json \
+              --policy-public /keys/policy.pub \
+              --policy-signature /keys/live_policy.sig
+
+          docker run -d --name stage41-witness-sidecar \
+            --pid=container:stage41-core --network host \
+            -v "$PWD/stage41_live_control:/control" \
+            -v "$PWD/stage41_live_witness:/run/stage39/witness:ro" \
+            -v "$PWD/stage41_live_keys/witness.key:/keys/witness.key:ro" \
+            stage41-live-open5gs \
+            python3 /opt/stage39/stage41_restart_witness_sidecar.py \
+              --control-dir /control \
+              --private-key /keys/witness.key \
+              --timeout-seconds 180
+
+          core_status="$(docker wait stage41-core)"
+          docker logs stage41-core
+          echo "Live restart core exit status: $core_status"
+          test "$core_status" -eq 0
+          sidecar_status="$(docker wait stage41-witness-sidecar)"
+          docker logs stage41-witness-sidecar
+          test "$sidecar_status" -eq 0
+          cat stage41_live_out/STAGE41_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive public verification material without private keys
+        if: success()
+        run: |
+          set -euo pipefail
+          cp stage41_live_keys/policy.pub stage41_live_out/policy-public.pem
+          cp stage41_live_keys/live_policy.sig stage41_live_out/policy-signature.bin
+          cp stage41_live_keys/lifecycle.pub stage41_live_out/lifecycle-public.pem
+          cp stage41_live_keys/witness.pub stage41_live_out/witness-public.pem
+          cp stage41_live_control/lifecycle_events.json stage41_live_out/signed_lifecycle_events.json
+          cp stage39/live_open5gs/live_policy.json stage41_live_out/independent_live_policy.json
+          (
+            cd stage41_live_out
+            sha256sum policy-public.pem policy-signature.bin lifecycle-public.pem \
+              witness-public.pem signed_lifecycle_events.json \
+              independent_live_policy.json stage41_report.json \
+              stage41_witness_snapshots.json > stage41_evidence_sha256.txt
+          )
+
+      - name: Live core diagnostics
+        if: failure()
+        run: |
+          docker logs stage41-core || true
+          docker logs stage41-witness-sidecar || true
+          docker logs stage41-mongo || true
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker rm -f stage41-witness-sidecar stage41-core stage41-mongo >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage41-live-real-restart-evidence
+          path: stage41_live_out/
+          if-no-files-found: warn
+          retention-days: 90

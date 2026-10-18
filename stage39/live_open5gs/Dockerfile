@@ -51,6 +51,9 @@ COPY stage39/live_open5gs/live_probe.py /opt/stage39/live_probe.py
 COPY stage39/live_open5gs/mtls_probe.py /opt/stage39/mtls_probe.py
 COPY stage39/live_open5gs/external_witness.py /opt/stage39/external_witness.py
 COPY stage39/live_open5gs/external_attack_driver.py /opt/stage39/external_attack_driver.py
+COPY stage39/live_open5gs/stage41_restart_witness_sidecar.py /opt/stage39/stage41_restart_witness_sidecar.py
+COPY stage39/live_open5gs/stage41_lifecycle_authority.py /opt/stage39/stage41_lifecycle_authority.py
+COPY stage39/live_open5gs/stage41_live_restart_compare.py /opt/stage39/stage41_live_restart_compare.py
 COPY stage39/full_profile_policy.json /opt/stage39/full_profile_policy.json
 COPY stage39/live_open5gs/live_policy.json /opt/stage39/live_policy.json
 
