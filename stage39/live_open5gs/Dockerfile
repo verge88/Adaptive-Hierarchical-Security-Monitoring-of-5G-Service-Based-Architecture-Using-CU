@@ -16,12 +16,14 @@ RUN git clone --branch "${OPEN5GS_REF}" --depth 1 https://github.com/open5gs/ope
 
 COPY stage39/live_open5gs/stage39-nnrf-handler.c /tmp/stage39-nnrf-handler.c
 COPY stage38/patch_sbi_context.py /tmp/patch_sbi_context.py
+COPY stage39/live_open5gs/patch_nfprofile_custom_info.py /tmp/patch_nfprofile_custom_info.py
 
 WORKDIR /src/open5gs
 RUN mkdir -p /var/log/open5gs /run/stage39/witness /run/stage38 \
     && test "$(git describe --tags --exact-match)" = "v2.7.6" \
     && cp /tmp/stage39-nnrf-handler.c src/nrf/nnrf-handler.c \
     && python3 /tmp/patch_sbi_context.py \
+    && python3 /tmp/patch_nfprofile_custom_info.py \
     && meson setup build \
     && ninja -C build \
         src/nrf/open5gs-nrfd \
