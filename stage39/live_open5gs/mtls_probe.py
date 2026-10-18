@@ -115,6 +115,12 @@ def prepare_configs():
     for _,config,nf_type,_ in PROCESSES.values():
         source=ROOT/config
         text=source.read_text()
+        if config=="nrf.yaml":
+            # The native KIE heartbeat test uses a 2 s NRF interval to keep
+            # CI short.  The separate mTLS load pass restores the normal
+            # laboratory interval so concurrency is not coupled to that
+            # acceleration knob.
+            text=text.replace("heartbeat: 2","heartbeat: 10")
         text=text.replace("http://","https://")
         text=text.replace("port: 80","port: 443")
         text=text.replace(":80",":443")
