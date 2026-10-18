@@ -30,7 +30,6 @@ WITNESS=Path("/run/stage39/witness")
 MUTATION_ROOT=Path("/run/stage38")
 MUTATION_PLAN=MUTATION_ROOT/"plan.tsv"
 MUTATION_ENABLE=MUTATION_ROOT/"enabled"
-KIE_EXTENSION_PATH=Path("/run/stage39/kie-extension.json")
 KIE_HEARTBEAT_DIR=Path("/run/stage39/nf-kie")
 KIE_HEARTBEAT_PATH=KIE_HEARTBEAT_DIR/"nssf1-custom-info.json"
 LIVE_POLICY_PATH=ROOT/"live_policy.json"
@@ -1151,7 +1150,6 @@ async def nfm_get_profile(nf_id):
 
 
 async def run_kie_nfprofile_heartbeat(clean,policy):
-    KIE_EXTENSION_PATH.unlink(missing_ok=True)
     KIE_HEARTBEAT_DIR.mkdir(parents=True,exist_ok=True)
     KIE_HEARTBEAT_PATH.unlink(missing_ok=True)
 
@@ -1943,7 +1941,6 @@ async def main_async(
         print(json.dumps(report,indent=2,ensure_ascii=False))
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
-        KIE_EXTENSION_PATH.unlink(missing_ok=True)
         KIE_HEARTBEAT_PATH.unlink(missing_ok=True)
         stop_all(processes)
 
