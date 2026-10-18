@@ -38,6 +38,15 @@ jobs:
             python:3.11-slim \
             python /app/stage44_multinode_tcp.py prepare-seed \
               --artifact-dir /stage42 --seed /data/stage44_seed.json
+      - name: Create per-node ephemeral 256-bit HMAC keys
+        run: |
+          set -euo pipefail
+          mkdir -p stage44_keys
+          for node in 0 1 2 3; do
+            openssl rand -hex 32 > "stage44_keys/node$node.key"
+            chmod 600 "stage44_keys/node$node.key"
+          done
+
       - name: Run coordinator and four separate TCP network nodes
         run: |
           set -euo pipefail
@@ -45,21 +54,44 @@ jobs:
           for node in 0 1 2 3; do
             docker run -d --name "stage44-node-$node" \
               --network stage44-net --cpus 1 --memory 2000m \
+              -e STAGE44_KEYS_DIR=/keys \
+              -v "$PWD/stage44_keys/node$node.key:/keys/node$node.key:ro" \
               -v "$PWD/stage44:/app:ro" \
               -v "$PWD/stage44_data:/data:ro" \
               python:3.11-slim \
               python -u /app/stage44_multinode_tcp.py worker \
                 --seed /data/stage44_seed.json --node "$node"
           done
+          mkdir -p stage44_out/lan stage44_out/wan15ms25mbit
           docker run --rm --name stage44-root --network stage44-net \
-            --cpus 4 --memory 3000m \
+            --cpus 4 --memory 3000m -e STAGE44_KEYS_DIR=/keys \
+            -v "$PWD/stage44_keys:/keys:ro" \
             -v "$PWD/stage44:/app:ro" \
             -v "$PWD/stage44_data:/data:ro" \
             -v "$PWD/stage44_out:/out" \
             python:3.11-slim \
             python -u /app/stage44_multinode_tcp.py coordinator \
-              --seed /data/stage44_seed.json --output /out --repeats 5
-          cat stage44_out/STAGE44_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+              --seed /data/stage44_seed.json --output /out/lan --profile lan --repeats 5
+          cat stage44_out/lan/STAGE44_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+          # Apply TRUE Linux qdisc shaping to each node's egress interface.
+          # 15 ms one-way added response delay; 25 Mbit/s per node.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iproute2 util-linux
+          for node in 0 1 2 3; do
+            pid="$(docker inspect -f '{{.State.Pid}}' "stage44-node-$node")"
+            sudo nsenter --target "$pid" --net tc qdisc replace dev eth0 root netem delay 15ms rate 25mbit
+            sudo nsenter --target "$pid" --net tc qdisc show dev eth0
+          done
+          docker run --rm --name stage44-root --network stage44-net \
+            --cpus 4 --memory 3000m -e STAGE44_KEYS_DIR=/keys \
+            -v "$PWD/stage44_keys:/keys:ro" \
+            -v "$PWD/stage44:/app:ro" \
+            -v "$PWD/stage44_data:/data:ro" \
+            -v "$PWD/stage44_out:/out" \
+            python:3.11-slim \
+            python -u /app/stage44_multinode_tcp.py coordinator \
+              --seed /data/stage44_seed.json --output /out/wan15ms25mbit --profile wan15ms25mbit --repeats 5
+          cat stage44_out/wan15ms25mbit/STAGE44_RESULT.md >> "$GITHUB_STEP_SUMMARY"
       - name: Archive reproducibility evidence
         if: success()
         run: |
@@ -68,8 +100,9 @@ jobs:
           cp stage44/stage44_multinode_tcp.py stage44_out/
           (
             cd stage44_out
-            sha256sum stage44_report.json STAGE44_RESULT.md stage44_seed.json \
-              stage44_multinode_tcp.py > stage44_sha256.txt
+            sha256sum lan/stage44_report.json lan/STAGE44_RESULT.md \
+              wan15ms25mbit/stage44_report.json wan15ms25mbit/STAGE44_RESULT.md \
+              stage44_seed.json stage44_multinode_tcp.py > stage44_sha256.txt
           )
       - name: Diagnostics
         if: failure()
