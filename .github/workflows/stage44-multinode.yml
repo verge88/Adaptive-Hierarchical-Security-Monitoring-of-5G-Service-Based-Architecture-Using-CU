@@ -1,0 +1,90 @@
+name: Stage44 five-node TCP hierarchy benchmark
+
+on:
+  pull_request:
+    paths:
+      - "stage44/**"
+      - ".github/workflows/stage44-multinode.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  five-network-namespaces:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download signed Open5GS Stage42 evidence as experiment source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage44_stage42 stage44_data stage44_out
+          gh run download 39148421353 \
+            -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU \
+            -n stage42-eighty-live-restarts-evidence -D stage44_stage42
+          ls -lh stage44_stage42/stage42_report.json stage44_stage42/stage42_witness_snapshots.json
+          sha256sum stage44_stage42/stage42_report.json
+      - name: Prepare reproducible logical NF source from measured Open5GS
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/stage44:/app:ro" \
+            -v "$PWD/stage44_stage42:/stage42:ro" \
+            -v "$PWD/stage44_data:/data" \
+            python:3.11-slim \
+            python /app/stage44_multinode_tcp.py prepare-seed \
+              --artifact-dir /stage42 --seed /data/stage44_seed.json
+      - name: Run coordinator and four separate TCP network nodes
+        run: |
+          set -euo pipefail
+          docker network create stage44-net
+          for node in 0 1 2 3; do
+            docker run -d --name "stage44-node-$node" \
+              --network stage44-net --cpus 1 --memory 2000m \
+              -v "$PWD/stage44:/app:ro" \
+              -v "$PWD/stage44_data:/data:ro" \
+              python:3.11-slim \
+              python -u /app/stage44_multinode_tcp.py worker \
+                --seed /data/stage44_seed.json --node "$node"
+          done
+          docker run --rm --name stage44-root --network stage44-net \
+            --cpus 4 --memory 3000m \
+            -v "$PWD/stage44:/app:ro" \
+            -v "$PWD/stage44_data:/data:ro" \
+            -v "$PWD/stage44_out:/out" \
+            python:3.11-slim \
+            python -u /app/stage44_multinode_tcp.py coordinator \
+              --seed /data/stage44_seed.json --output /out --repeats 5
+          cat stage44_out/STAGE44_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive reproducibility evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          cp stage44_data/stage44_seed.json stage44_out/
+          cp stage44/stage44_multinode_tcp.py stage44_out/
+          (
+            cd stage44_out
+            sha256sum stage44_report.json STAGE44_RESULT.md stage44_seed.json \
+              stage44_multinode_tcp.py > stage44_sha256.txt
+          )
+      - name: Diagnostics
+        if: failure()
+        run: |
+          for n in 0 1 2 3; do docker logs "stage44-node-$n" || true; done
+          ls -lha stage44_out || true
+      - name: Cleanup
+        if: always()
+        run: |
+          for n in 0 1 2 3; do docker rm -f "stage44-node-$n" >/dev/null 2>&1 || true; done
+          docker network rm stage44-net >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage44-five-node-tcp-evidence
+          path: stage44_out/
+          if-no-files-found: warn
+          retention-days: 90
