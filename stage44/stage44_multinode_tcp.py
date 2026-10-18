@@ -42,6 +42,9 @@ def records_for_node(seed,n,trial,attacked,node):
     a=(n*node)//NODES;b=(n*(node+1))//NODES
     end_i=n-1;end_rep,end_slot=divmod(end_i,k)
     last_uuid=slot_uuid(keys[end_slot],end_rep,trial,end_i,seed)
+    # Bind cross-node duplicate to the final, independently mutated last UUID.
+    if attacked and end_i%59==trial%59:
+        last_uuid=str(uuid.uuid5(uuid.NAMESPACE_OID,f"spoof/{trial}/{end_i}"))
     out=[]
     for i in range(a,b):
         rep,si=divmod(i,k);slot=keys[si];src=seed["seed_profiles"][slot]
