@@ -15,7 +15,11 @@ NF_TYPES=("nssf1","ausf1","bsf1","udm1","amf1","smf1","pcf1","scp1")
 def canon(x): return json.dumps(x,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
 def sha(x): return hashlib.sha256(canon(x)).hexdigest()
 def uuid_tag(u): return hashlib.sha256(str(u).lower().encode()).hexdigest()[:32]
-def secret(seed): return hashlib.sha256(("stage44-multinode/"+seed).encode()).digest()
+def secret(seed,index=0):
+    keydir=os.environ.get("STAGE44_KEYS_DIR")
+    if keydir: return bytes.fromhex(Path(keydir,f"node{index}.key").read_text().strip())
+    # Deterministic fallback only for local reproduction, not CI.
+    return hashlib.sha256(("stage44-multinode/"+seed+"/"+str(index)).encode()).digest()
 def sign(body,key): return hmac.new(key,canon(body),hashlib.sha256).hexdigest()
 def envelope(body,key): return canon({"body":body,"mac_sha256":sign(body,key)})
 def verify(blob,key,mode,cycle,index,policy_hash):
@@ -94,10 +98,9 @@ def merge(alerts,claims):
         if len(slots)>1:
             for slot in slots:alerts.append((slot,"duplicate_uuid"))
     return sorted(set(tuple(a) for a in alerts))
-def central_parallel(records_groups):
-    # Exactly four validation processes, matching four hierarchy validation nodes.
-    with concurrent.futures.ProcessPoolExecutor(max_workers=NODES) as ex:
-        return list(ex.map(check_group,records_groups))
+def central_parallel(records_groups,pool):
+    # Persistent process pool, removes per-trial fork/startup penalty.
+    return list(pool.map(check_group,records_groups))
 def prepare_seed(artifact_dir,output):
     import zipfile
     d=Path(artifact_dir)
@@ -136,7 +139,7 @@ def prepare_seed(artifact_dir,output):
     print("STAGE44_SEED",len(rec),"12 live discovered profiles + NRF modeled",flush=True)
 
 def worker_server(seed,index,port):
-    key=secret(seed["source_sha256_report"]);ph=sha(seed["seed_profiles"])
+    key=secret(seed["source_sha256_report"],index);ph=sha(seed["seed_profiles"])
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path=="/health":
@@ -177,15 +180,15 @@ def fetch_node(index,mode,n,trial,attack):
         body=r.read();meta=dict(r.headers.items())
     return body,meta
 
-def network_trial(seed,n,trial,attack,mode,executor):
-    key=secret(seed["source_sha256_report"]);ph=sha(seed["seed_profiles"])
+def network_trial(seed,n,trial,attack,mode,executor,compute_pool):
+    ph=sha(seed["seed_profiles"])
     t0=time.perf_counter_ns(); c0=time.process_time_ns()
     futs=[executor.submit(fetch_node,i,mode,n,trial,attack) for i in range(NODES)]
     packets=[f.result(timeout=250) for f in futs]
     ingress_end=time.perf_counter_ns()
     received=[]; bytes_to_root=0;cpu_worker=[];wall_worker=[]
     for index,(packet,headers) in enumerate(packets):
-        b=verify(packet,key,mode,trial,index,ph)
+        b=verify(packet,secret(seed["source_sha256_report"],index),mode,trial,index,ph)
         bytes_to_root+=len(packet)
         cpu_worker.append(float(headers["X-Worker-Compute-Cpu-Ms"]))
         wall_worker.append(float(headers["X-Worker-Compute-Wall-Ms"]))
@@ -194,7 +197,7 @@ def network_trial(seed,n,trial,attack,mode,executor):
         data=[p["items"] for p in received]
         count=sum(len(v) for v in data)
         # Process pool created PER trial, symmetrical four processes but includes startup overhead.
-        partial=central_parallel(data)
+        partial=central_parallel(data,compute_pool)
         alerts=[x for a,_ in partial for x in a];ids=[x for _,c in partial for x in c]
     else:
         count=sum(p["count"] for p in received)
@@ -213,7 +216,7 @@ def network_trial(seed,n,trial,attack,mode,executor):
             "worker_cpu_ms_sum":sum(cpu_worker),"worker_prepare_wall_ms_max":max(wall_worker)}
 
 def security_negative_tests(seed):
-    key=secret(seed["source_sha256_report"]);ph=sha(seed["seed_profiles"])
+    key=secret(seed["source_sha256_report"],0);ph=sha(seed["seed_profiles"])
     b={"mode":"hier","node":0,"cycle":991,"policy_sha256":ph}
     raw=envelope(b,key);broken=json.loads(raw);broken["body"]["node"]=1
     tests={}
@@ -235,13 +238,17 @@ def run_coordinator(args):
     for i in range(NODES):
         with urllib.request.urlopen(f"http://stage44-node-{i}:8080/health",timeout=30) as r:
             assert r.read()==b"ok"
-    with concurrent.futures.ThreadPoolExecutor(max_workers=NODES) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=NODES) as pool, concurrent.futures.ProcessPoolExecutor(max_workers=NODES) as compute_pool:
         for n in (13,1040,4160,8320):
             for attack in (False,True):
                 for trial in range(args.repeats):
                     # Deterministic paired data: both workers derive the same immutable seed
-                    c=network_trial(seed,n,trial,attack,"central",pool)
-                    h=network_trial(seed,n,trial,attack,"hier",pool)
+                    if trial%2==0:
+                        c=network_trial(seed,n,trial,attack,"central",pool,compute_pool)
+                        h=network_trial(seed,n,trial,attack,"hier",pool,compute_pool)
+                    else:
+                        h=network_trial(seed,n,trial,attack,"hier",pool,compute_pool)
+                        c=network_trial(seed,n,trial,attack,"central",pool,compute_pool)
                     if (c["alert_sha256"],c["alerts"],c["checked"])!=(h["alert_sha256"],h["alerts"],h["checked"]):
                         raise AssertionError("non-identical verdicts "+str((n,trial,attack)))
                     if attack and n>64 and not c["has_cross_node_duplicate"]:
@@ -264,7 +271,7 @@ def run_coordinator(args):
                 prefix=("attacked_" if attack else "benign_")+mode
                 summary[str(n)][prefix+"_latency_ms_median"]=round(statistics.median(x["elapsed_ms"] for x in rows),4)
                 summary[str(n)][prefix+"_worker_cpu_ms_sum_median"]=round(statistics.median(x["worker_cpu_ms_sum"] for x in rows),4)
-    report={"schema":"stage44-five-node-real-tcp-v1",
+    report={"schema":"stage44-five-node-real-tcp-v2","network_profile":args.profile,
             "topology":{"coordinator":"Docker isolated namespace, python 3.11","workers":nodes,
                         "physical_hosts":1,"isolated_network_namespaces":5,
                         "transport":"Docker bridge virtual Ethernet + real HTTP/TCP, no physical WAN",
@@ -277,14 +284,14 @@ def run_coordinator(args):
                           "Both paths use the same semantic detector but place computation differently.",
                           "HMAC is benchmark integrity, not independently attested truth or a TEE.",
                           "Application-layer HTTP body length measures payload, not Ethernet/TCP/IP headers.",
-                          "Central root uses fresh four-process pool per trial (startup included), resulting latency is implementation-specific.",
+                          "Central root uses persistent four-process pool, not per-trial process startup.",
                           "No shared unpredictable external traffic or fault-tolerant orchestrator."],
             "security_negative_tests":security,"paired_cases":len(comparisons),
             "individually_processed":len(records),"verdict_equivalence":all(x["match"] for x in comparisons),
             "summary":summary,"records":records}
     Path(args.output).mkdir(parents=True,exist_ok=True)
     Path(args.output,"stage44_report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
-    lines=["# Stage44 five-node real TCP benchmark","",
+    lines=[f"# Stage44 five-node real TCP benchmark — {args.profile}","",
            f"- 5 Docker containers/network namespaces, 1 physical host; 4 remote validation nodes",
            f"- {len(comparisons)} paired trials; {len(records)} observations; ALL decisions equal",
            f"- Negative cryptographic controls: {security}","","| Logical NF | Central bytes | Hierarchy bytes | Saved | Central clean ms | Hier clean ms |"]
@@ -307,6 +314,7 @@ def main():
     ap.add_argument("--node",type=int,default=0)
     ap.add_argument("--port",type=int,default=8080)
     ap.add_argument("--repeats",type=int,default=5)
+    ap.add_argument("--profile",choices=("lan","wan15ms25mbit"),default="lan")
     args=ap.parse_args()
     if args.operation=="prepare-seed":prepare_seed(args.artifact_dir,args.seed)
     elif args.operation=="worker":worker_server(json.loads(Path(args.seed).read_text()),args.node,args.port)
