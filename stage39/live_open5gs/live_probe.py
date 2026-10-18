@@ -1696,7 +1696,7 @@ async def main_async(
         native_mutations=await run_native_mutations(
             clean,witness,live_policy,external_mutation_control
         )
-        kie_sbi_extension=await run_kie_nfprofile_heartbeat(
+        kie_nfprofile=await run_kie_nfprofile_heartbeat(
             clean,live_policy
         )
 
@@ -1743,7 +1743,7 @@ async def main_async(
             "live_registry_field_poisoning":
                 registry_field_poisoning,
             "native_mutations":native_mutations,
-            "kie_sbi_vendor_extension":kie_sbi_extension,
+            "kie_nfprofile_custom_info":kie_nfprofile,
         }
 
         telemetry_digest=sha256_json(live_evidence)
@@ -1849,7 +1849,7 @@ async def main_async(
                 "timing_ms":native_mutations["timing_ms"],
             },
             "kie_bound_to_live_evidence":True,
-            "kie_sbi_vendor_extension":kie_sbi_extension,
+            "kie_nfprofile_custom_info":kie_nfprofile,
             "telemetry_digest":telemetry_digest,
             "limitations":[
                 "External witness runs in a separate container and keeps its "
@@ -1936,7 +1936,7 @@ async def main_async(
             + f"- KIE bound to live evidence: "
             f"{report['kie_bound_to_live_evidence']}\n"
             f"- KIE native NFProfile.customInfo heartbeat round-trip: "
-            f"{kie_sbi_extension['verified']}\n"
+            f"{kie_nfprofile['verified']}\n"
         )
         print(json.dumps(report,indent=2,ensure_ascii=False))
     finally:
