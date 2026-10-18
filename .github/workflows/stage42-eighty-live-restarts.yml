@@ -1,0 +1,140 @@
+name: Stage42 80 LIVE NF restarts with signed witnesses
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage42-eighty-live-restarts.yml'
+      - 'stage39/live_open5gs/stage42_*'
+      - 'stage39/live_open5gs/Dockerfile'
+      - 'stage39/live_open5gs/external_witness.py'
+      - 'stage39/live_open5gs/live_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  open5gs-real-restarts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MongoDB for Open5GS PCF
+        run: |
+          set -euo pipefail
+          docker run -d --name stage42-mongo --network host mongo:7 --bind_ip 127.0.0.1 --port 27017
+          for i in $(seq 1 75); do
+            if docker exec stage42-mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs stage42-mongo
+          exit 1
+
+      - name: Build Open5GS 2.7.6 with native NRF discovery mutation hook
+        run: docker build -f stage39/live_open5gs/Dockerfile -t stage42-live-open5gs .
+
+      - name: Issue independent policy, lifecycle and witness signing keys
+        run: |
+          set -euo pipefail
+          mkdir -p stage42_live_out stage42_live_control stage42_live_witness stage42_live_keys
+          for purpose in policy lifecycle witness; do
+            openssl ecparam -name prime256v1 -genkey -noout -out "stage42_live_keys/${purpose}.key"
+            openssl ec -in "stage42_live_keys/${purpose}.key" -pubout -out "stage42_live_keys/${purpose}.pub"
+            chmod 600 "stage42_live_keys/${purpose}.key"
+          done
+          openssl dgst -sha256 -sign stage42_live_keys/policy.key \
+            -out stage42_live_keys/live_policy.sig stage39/live_open5gs/live_policy.json
+          openssl dgst -sha256 -verify stage42_live_keys/policy.pub \
+            -signature stage42_live_keys/live_policy.sig stage39/live_open5gs/live_policy.json
+          docker run --rm --network host \
+            -v "$PWD/stage42_live_control:/control" \
+            -v "$PWD/stage42_live_keys/lifecycle.key:/keys/lifecycle.key:ro" \
+            -v "$PWD/stage39/live_open5gs/stage42_eighty_restart_authority.py:/opt/stage39/stage42_eighty_restart_authority.py:ro" \
+            stage42-live-open5gs \
+            python3 /opt/stage39/stage42_eighty_restart_authority.py \
+              --policy /opt/stage39/live_policy.json \
+              --key /keys/lifecycle.key \
+              --out /control/lifecycle_events.json
+
+      - name: Execute 80 genuine NF restarts and 160 signed-witness comparisons
+        run: |
+          set -euo pipefail
+          docker run -d --name stage42-core --network host \
+            -v "$PWD/stage42_live_out:/out" \
+            -v "$PWD/stage42_live_control:/control" \
+            -v "$PWD/stage42_live_witness:/run/stage39/witness" \
+            -v "$PWD/stage42_live_keys/witness.pub:/keys/witness.pub:ro" \
+            -v "$PWD/stage42_live_keys/lifecycle.pub:/keys/lifecycle.pub:ro" \
+            -v "$PWD/stage42_live_keys/policy.pub:/keys/policy.pub:ro" \
+            -v "$PWD/stage42_live_keys/live_policy.sig:/keys/live_policy.sig:ro" \
+            -v "$PWD/stage39/live_open5gs/stage42_eighty_restart_compare.py:/opt/stage39/stage42_eighty_restart_compare.py:ro" \
+            stage42-live-open5gs \
+            python3 /opt/stage39/stage42_eighty_restart_compare.py \
+              --output /out --control-dir /control \
+              --witness-public /keys/witness.pub \
+              --lifecycle-public /keys/lifecycle.pub \
+              --lifecycle-events /control/lifecycle_events.json \
+              --policy-public /keys/policy.pub \
+              --policy-signature /keys/live_policy.sig
+
+          docker run -d --name stage42-witness-sidecar \
+            --pid=container:stage42-core --network host \
+            -v "$PWD/stage42_live_control:/control" \
+            -v "$PWD/stage42_live_witness:/run/stage39/witness:ro" \
+            -v "$PWD/stage42_live_keys/witness.key:/keys/witness.key:ro" \
+            -v "$PWD/stage39/live_open5gs/stage42_eighty_restart_witness_sidecar.py:/opt/stage39/stage42_eighty_restart_witness_sidecar.py:ro" \
+            stage42-live-open5gs \
+            python3 /opt/stage39/stage42_eighty_restart_witness_sidecar.py \
+              --control-dir /control \
+              --private-key /keys/witness.key \
+              --timeout-seconds 2400
+
+          core_status="$(docker wait stage42-core)"
+          docker logs stage42-core
+          echo "Live restart core exit status: $core_status"
+          test "$core_status" -eq 0
+          sidecar_status="$(docker wait stage42-witness-sidecar)"
+          docker logs stage42-witness-sidecar
+          test "$sidecar_status" -eq 0
+          cat stage42_live_out/STAGE42_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive public verification material without private keys
+        if: success()
+        run: |
+          set -euo pipefail
+          cp stage42_live_keys/policy.pub stage42_live_out/policy-public.pem
+          cp stage42_live_keys/live_policy.sig stage42_live_out/policy-signature.bin
+          cp stage42_live_keys/lifecycle.pub stage42_live_out/lifecycle-public.pem
+          cp stage42_live_keys/witness.pub stage42_live_out/witness-public.pem
+          cp stage42_live_control/lifecycle_events.json stage42_live_out/signed_lifecycle_events.json
+          cp stage39/live_open5gs/live_policy.json stage42_live_out/independent_live_policy.json
+          (
+            cd stage42_live_out
+            sha256sum policy-public.pem policy-signature.bin lifecycle-public.pem \
+              witness-public.pem signed_lifecycle_events.json \
+              independent_live_policy.json stage42_report.json \
+              stage42_witness_snapshots.json > stage42_evidence_sha256.txt
+          )
+
+      - name: Live core diagnostics
+        if: failure()
+        run: |
+          docker logs stage42-core || true
+          docker logs stage42-witness-sidecar || true
+          docker logs stage42-mongo || true
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker rm -f stage42-witness-sidecar stage42-core stage42-mongo >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage42-eighty-live-restarts-evidence
+          path: stage42_live_out/
+          if-no-files-found: warn
+          retention-days: 90
