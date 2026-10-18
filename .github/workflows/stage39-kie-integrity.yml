@@ -9,6 +9,8 @@ on:
       - 'research/stage39_external_scenarios.py'
       - 'research/stage39_orchestration_eval.py'
       - 'research/test_stage39_kie.py'
+      - 'research/stage40_case_generator.py'
+      - 'research/stage40_compare_baseline.py'
       - 'stage39/full_profile_policy.json'
       - 'article/STAGE39_KIE_IMPLEMENTATION.md'
   pull_request:
@@ -19,6 +21,8 @@ on:
       - 'research/stage39_external_scenarios.py'
       - 'research/stage39_orchestration_eval.py'
       - 'research/test_stage39_kie.py'
+      - 'research/stage40_case_generator.py'
+      - 'research/stage40_compare_baseline.py'
       - 'stage39/full_profile_policy.json'
   workflow_dispatch:
     inputs:
@@ -103,6 +107,26 @@ jobs:
             --key-hex "$KEY_HEX" \
             --output stage39_out
 
+      - name: Stage40 - strong policy+lifecycle baseline versus independent witness
+        run: |
+          set -euo pipefail
+          mkdir -p stage40_out
+          openssl rand -hex 32 > "$RUNNER_TEMP/stage40-event.key"
+          openssl rand -hex 32 > "$RUNNER_TEMP/stage40-witness.key"
+          python research/stage40_case_generator.py \
+            --policy stage39/full_profile_policy.json \
+            --event-key-file "$RUNNER_TEMP/stage40-event.key" \
+            --witness-key-file "$RUNNER_TEMP/stage40-witness.key" \
+            --output stage40_out
+          python research/stage40_compare_baseline.py \
+            --policy stage39/full_profile_policy.json \
+            --cases stage40_out/stage40_cases.json \
+            --labels stage40_out/stage40_private_labels.json \
+            --event-key-file "$RUNNER_TEMP/stage40-event.key" \
+            --witness-key-file "$RUNNER_TEMP/stage40-witness.key" \
+            --output stage40_out
+          cat stage40_out/STAGE40_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Exercise mTLS, OAuth2 client credentials and edge protection
         run: python research/stage39_transport_probe.py --output stage39_out
 
@@ -123,6 +147,8 @@ jobs:
         if: always()
         with:
           name: stage39-kie-streaming-evidence
-          path: stage39_out/
+          path: |
+            stage39_out/
+            stage40_out/
           if-no-files-found: warn
           retention-days: 90
