@@ -31,6 +31,8 @@ MUTATION_ROOT=Path("/run/stage38")
 MUTATION_PLAN=MUTATION_ROOT/"plan.tsv"
 MUTATION_ENABLE=MUTATION_ROOT/"enabled"
 KIE_EXTENSION_PATH=Path("/run/stage39/kie-extension.json")
+KIE_HEARTBEAT_DIR=Path("/run/stage39/nf-kie")
+KIE_HEARTBEAT_PATH=KIE_HEARTBEAT_DIR/"nssf1-custom-info.json"
 LIVE_POLICY_PATH=ROOT/"live_policy.json"
 NRF_HOST="127.0.0.10"
 NRF_PORT=80
@@ -595,12 +597,15 @@ def log_tail(slot):
 def start(slot):
     binary,config,_,_=PROCESSES[slot]
     handle=open(LOG/f"stage39-{slot}-stdout.log","ab",buffering=0)
+    env={**os.environ,"STAGE38_WITNESS_DIR":str(WITNESS)}
+    if slot=="nssf1":
+        env["STAGE39_KIE_CUSTOM_INFO_PATH"]=str(KIE_HEARTBEAT_PATH)
     return subprocess.Popen(
         [binary,"-c",str(ROOT/config)],
         stdout=handle,
         stderr=subprocess.STDOUT,
         start_new_session=True,
-        env={**os.environ,"STAGE38_WITNESS_DIR":str(WITNESS)},
+        env=env,
     )
 
 
@@ -1050,10 +1055,116 @@ async def run_persistent_registration_poisoning(clean,witness,policy):
 
 
 
-async def run_kie_sbi_vendor_extension(clean,policy):
+async def wait_nfprofile_kie(nf_id,cycle=None,absent=False,timeout_seconds=12):
+    deadline=time.monotonic()+timeout_seconds
+    last=None
+    while time.monotonic()<deadline:
+        doc=await discover_document("NSSF")
+        if "x-stage39-kie" in doc:
+            raise RuntimeError(
+                "legacy top-level x-stage39-kie unexpectedly present"
+            )
+        rows=doc["nfInstances"]
+        row=next(
+            (
+                item for item in rows
+                if str(item.get("nfInstanceId","")).lower()==nf_id.lower()
+            ),
+            None,
+        )
+        if row is None:
+            last={"error":"target NF missing from discovery"}
+            await asyncio.sleep(0.1)
+            continue
+        custom=row.get("customInfo")
+        if absent:
+            if not isinstance(custom,dict) or "stage39Kie" not in custom:
+                return doc,row,None
+        elif isinstance(custom,dict):
+            observed=custom.get("stage39Kie")
+            if (
+                isinstance(observed,dict)
+                and (cycle is None or int(observed.get("cycle",-1))==cycle)
+            ):
+                return doc,row,observed
+        last={"customInfo":custom}
+        await asyncio.sleep(0.1)
+    raise RuntimeError(
+        f"timeout waiting for NFProfile.customInfo KIE "
+        f"nf={nf_id} cycle={cycle} absent={absent} last={last}"
+    )
+
+
+def kie_objects_from_wire(observed):
+    observed_req=KIERequest(
+        str(observed.get("controller_id","")),
+        str(observed.get("subject_id","")),
+        int(observed.get("cycle",-1)),
+        int(observed.get("issued_at_ms",0)),
+        str(observed.get("nonce","")),
+        str(observed.get("policy_sha256","")),
+        str(observed.get("telemetry_digest","")),
+        str(observed.get("mac","")),
+    )
+    response=observed.get("response")
+    if not isinstance(response,dict):
+        raise RuntimeError("NFProfile customInfo KIE response missing")
+    observed_resp=KIEResponse(
+        str(response.get("controller_id","")),
+        str(response.get("subject_id","")),
+        int(response.get("cycle",-1)),
+        str(response.get("request_nonce","")),
+        int(response.get("issued_at_ms",0)),
+        response.get("report") if isinstance(response.get("report"),dict) else {},
+        str(response.get("mac","")),
+    )
+    return observed_req,observed_resp
+
+
+def kie_custom_info(req,resp,phase):
+    return {
+        "stage39Kie":{
+            **req.core(),
+            "mac":req.mac,
+            "response":{
+                **resp.core(),
+                "mac":resp.mac,
+            },
+            "carrier":"3gpp-nfprofile-customInfo",
+            "schema":"TS29510-NFProfile.customInfo",
+            "transport":"native Open5GS Nnrf_NFManagement heartbeat PATCH",
+            "phase":phase,
+        }
+    }
+
+
+async def nfm_get_profile(nf_id):
+    status,body=await h2_get(
+        NRF_HOST,NRF_PORT,f"/nnrf-nfm/v1/nf-instances/{nf_id}",timeout=8
+    )
+    if status!=200:
+        raise RuntimeError(
+            f"Nnrf NFM profile GET failed {nf_id}: "
+            f"status={status} body={body[:1000]!r}"
+        )
+    return json.loads(body)
+
+
+async def run_kie_nfprofile_heartbeat(clean,policy):
     KIE_EXTENSION_PATH.unlink(missing_ok=True)
+    KIE_HEARTBEAT_DIR.mkdir(parents=True,exist_ok=True)
+    KIE_HEARTBEAT_PATH.unlink(missing_ok=True)
+
+    target=row_with_endpoint(clean["NSSF"],PROCESSES["nssf1"][3])
+    nf_id=str(target.get("nfInstanceId",""))
+    if not nf_id:
+        raise RuntimeError("nssf1 UUID missing for KIE heartbeat test")
+
     controller_key=hashlib.sha256(
-        b"stage39-live-sbi-kie-controller"
+        b"stage39-live-native-kie-controller"
+    ).digest()
+    subject_key=hashlib.sha256(
+        b"stage39-live-native-kie-subject"
     ).digest()
     telemetry_digest=sha256_json({
         typ:canonical_rows(rows)
@@ -1062,117 +1173,188 @@ async def run_kie_sbi_vendor_extension(clean,policy):
     policy_digest=hashlib.sha256(
         LIVE_POLICY_PATH.read_bytes()
     ).hexdigest()
-    now=int(time.time()*1000)
-    req=KIERequest.create(
-        "stage39-kie-sbi-controller",
-        "nnrf-disc",
-        7001,
-        policy_digest,
-        telemetry_digest,
-        controller_key,
-        now,
-        "39ab39ab39ab39ab39ab39ab39ab39ab",
-    )
-    subject_key=hashlib.sha256(
-        b"stage39-live-sbi-kie-subject"
-    ).digest()
-    resp=KIEResponse.create(
-        req,
-        {
-            "subject":"live-open5gs-nrf",
-            "profile_digest":telemetry_digest,
-            "policy_sha256":policy_digest,
-            "status":"OK",
-        },
-        subject_key,
-        now,
-    )
-    extension={
-        **req.core(),
-        "mac":req.mac,
-        "response":{
-            **resp.core(),
-            "mac":resp.mac,
-        },
-        "carrier":"nnrf-disc-json-vendor-extension",
-        "field":"x-stage39-kie",
-    }
-    atomic_json_write(KIE_EXTENSION_PATH,extension)
-    anchor_path=Path("/run/stage39/kie-sbi-anchor.json")
+    anchor_path=Path("/run/stage39/kie-native-anchor.json")
     anchor_path.unlink(missing_ok=True)
-    try:
-        doc=await discover_document("NSSF")
-        observed=doc.get("x-stage39-kie")
-        if not isinstance(observed,dict):
-            raise RuntimeError(
-                "Nnrf discovery response missing x-stage39-kie"
-            )
-        if observed.get("kind")!="KIE_REQUEST":
-            raise RuntimeError("KIE SBI extension kind mismatch")
-        if int(observed.get("version",-1))!=1:
-            raise RuntimeError("KIE SBI extension version mismatch")
-        observed_req=KIERequest(
-            str(observed.get("controller_id","")),
-            str(observed.get("subject_id","")),
-            int(observed.get("cycle",-1)),
-            int(observed.get("issued_at_ms",0)),
-            str(observed.get("nonce","")),
-            str(observed.get("policy_sha256","")),
-            str(observed.get("telemetry_digest","")),
-            str(observed.get("mac","")),
-        )
-        observed_req.verify(
-            controller_key,
-            FreshnessAnchor(anchor_path),
+
+    def make_pair(cycle,issued_at_ms,nonce,phase):
+        req=KIERequest.create(
+            "stage39-native-kie-controller",
+            nf_id,
+            cycle,
             policy_digest,
             telemetry_digest,
-            now,
+            controller_key,
+            issued_at_ms,
+            nonce,
         )
-        observed_response=observed.get("response")
-        if not isinstance(observed_response,dict):
-            raise RuntimeError("KIE SBI response missing")
-        observed_resp=KIEResponse(
-            str(observed_response.get("controller_id","")),
-            str(observed_response.get("subject_id","")),
-            int(observed_response.get("cycle",-1)),
-            str(observed_response.get("request_nonce","")),
-            int(observed_response.get("issued_at_ms",0)),
-            observed_response.get("report")
-                if isinstance(observed_response.get("report"),dict)
-                else {},
-            str(observed_response.get("mac","")),
+        resp=KIEResponse.create(
+            req,
+            {
+                "subject":"live-open5gs-nssf1",
+                "profile_digest":telemetry_digest,
+                "policy_sha256":policy_digest,
+                "status":"OK",
+                "phase":phase,
+            },
+            subject_key,
+            issued_at_ms,
         )
-        observed_resp.verify(
-            subject_key,observed_req,now
-        )
-        if observed_response.get("report",{}).get("status")!="OK":
-            raise RuntimeError("KIE SBI response status mismatch")
-        if observed.get("carrier")!="nnrf-disc-json-vendor-extension":
-            raise RuntimeError("KIE SBI carrier marker mismatch")
-        if observed.get("field")!="x-stage39-kie":
-            raise RuntimeError("KIE SBI field marker mismatch")
-    finally:
-        KIE_EXTENSION_PATH.unlink(missing_ok=True)
+        return req,resp
 
-    clean_doc=await discover_document("NSSF")
+    now=int(time.time()*1000)
+    req1,resp1=make_pair(
+        7001,now,"39ab39ab39ab39ab39ab39ab39ab39ab","initial"
+    )
+    atomic_json_write(
+        KIE_HEARTBEAT_PATH,kie_custom_info(req1,resp1,"initial")
+    )
+    doc1,row1,wire1=await wait_nfprofile_kie(nf_id,7001)
+    observed_req1,observed_resp1=kie_objects_from_wire(wire1)
+    main_anchor=FreshnessAnchor(anchor_path)
+    observed_req1.verify(
+        controller_key,main_anchor,policy_digest,telemetry_digest,
+        int(time.time()*1000)
+    )
+    observed_resp1.verify(
+        subject_key,observed_req1,int(time.time()*1000)
+    )
+    if wire1.get("carrier")!="3gpp-nfprofile-customInfo":
+        raise RuntimeError("KIE customInfo carrier mismatch")
+    if wire1.get("transport")!=(
+        "native Open5GS Nnrf_NFManagement heartbeat PATCH"
+    ):
+        raise RuntimeError("KIE heartbeat transport marker mismatch")
+
+    nfm_profile=await nfm_get_profile(nf_id)
+    nfm_kie=(
+        nfm_profile.get("customInfo",{}).get("stage39Kie")
+        if isinstance(nfm_profile.get("customInfo"),dict)
+        else None
+    )
+    if not isinstance(nfm_kie,dict) or int(nfm_kie.get("cycle",-1))!=7001:
+        raise RuntimeError("KIE did not persist through Nnrf NFM profile GET")
+
+    replay_rejected=False
+    await asyncio.sleep(2.4)
+    _,_,wire_replay=await wait_nfprofile_kie(nf_id,7001)
+    replay_req,_=kie_objects_from_wire(wire_replay)
+    try:
+        replay_req.verify(
+            controller_key,main_anchor,policy_digest,telemetry_digest,
+            int(time.time()*1000)
+        )
+    except Exception:
+        replay_rejected=True
+    if not replay_rejected:
+        raise RuntimeError("live KIE replay accepted after heartbeat")
+
+    stale_now=int(time.time()*1000)
+    stale_req,stale_resp=make_pair(
+        7002,stale_now-60_000,
+        "39ac39ac39ac39ac39ac39ac39ac39ac","stale"
+    )
+    atomic_json_write(
+        KIE_HEARTBEAT_PATH,kie_custom_info(stale_req,stale_resp,"stale")
+    )
+    _,_,wire_stale=await wait_nfprofile_kie(nf_id,7002)
+    stale_wire_req,_=kie_objects_from_wire(wire_stale)
+    stale_rejected=False
+    try:
+        stale_wire_req.verify(
+            controller_key,
+            FreshnessAnchor(Path("/run/stage39/kie-native-stale.json")),
+            policy_digest,telemetry_digest,int(time.time()*1000)
+        )
+    except Exception:
+        stale_rejected=True
+    if not stale_rejected:
+        raise RuntimeError("stale KIE accepted through native heartbeat path")
+
+    tamper_now=int(time.time()*1000)
+    tamper_req,tamper_resp=make_pair(
+        7003,tamper_now,
+        "39ad39ad39ad39ad39ad39ad39ad39ad","tamper"
+    )
+    tampered=kie_custom_info(tamper_req,tamper_resp,"tamper")
+    tampered["stage39Kie"]["mac"]="0"*64
+    atomic_json_write(KIE_HEARTBEAT_PATH,tampered)
+    _,_,wire_tamper=await wait_nfprofile_kie(nf_id,7003)
+    tamper_wire_req,_=kie_objects_from_wire(wire_tamper)
+    tamper_rejected=False
+    try:
+        tamper_wire_req.verify(
+            controller_key,
+            FreshnessAnchor(Path("/run/stage39/kie-native-tamper.json")),
+            policy_digest,telemetry_digest,int(time.time()*1000)
+        )
+    except Exception:
+        tamper_rejected=True
+    if not tamper_rejected:
+        raise RuntimeError("tampered KIE accepted through native heartbeat path")
+
+    final_now=int(time.time()*1000)
+    req_final,resp_final=make_pair(
+        7004,final_now,
+        "39ae39ae39ae39ae39ae39ae39ae39ae","final"
+    )
+    atomic_json_write(
+        KIE_HEARTBEAT_PATH,
+        kie_custom_info(req_final,resp_final,"final")
+    )
+    _,_,wire_final=await wait_nfprofile_kie(nf_id,7004)
+    final_wire_req,final_wire_resp=kie_objects_from_wire(wire_final)
+    final_wire_req.verify(
+        controller_key,main_anchor,policy_digest,telemetry_digest,
+        int(time.time()*1000)
+    )
+    final_wire_resp.verify(
+        subject_key,final_wire_req,int(time.time()*1000)
+    )
+
+    atomic_json_write(KIE_HEARTBEAT_PATH,{})
+    clean_doc,clean_row,_=await wait_nfprofile_kie(
+        nf_id,absent=True,timeout_seconds=12
+    )
+    KIE_HEARTBEAT_PATH.unlink(missing_ok=True)
     if "x-stage39-kie" in clean_doc:
-        raise RuntimeError("KIE SBI extension persisted after removal")
+        raise RuntimeError("legacy top-level KIE carrier remained enabled")
+    if (
+        isinstance(clean_row.get("customInfo"),dict)
+        and "stage39Kie" in clean_row["customInfo"]
+    ):
+        raise RuntimeError("KIE customInfo did not cleanly disappear")
+
     return {
         "verified":True,
-        "sbi_service":"nnrf-disc",
-        "json_field":"x-stage39-kie",
-        "carrier":"vendor extension in live Open5GS discovery response",
-        "hmac":"HMAC-SHA256",
+        "nrf_services":[
+            "nnrf-nfm registration/profile state",
+            "nnrf-nfm native heartbeat PATCH",
+            "nnrf-disc discovery",
+        ],
+        "nf_instance_id":nf_id,
+        "schema_defined_container":"NFProfile.customInfo",
+        "schema_source":"3GPP TS 29.510 NFProfile",
+        "kie_payload_status":
+            "research-defined content inside schema-defined customInfo",
+        "native_open5gs_heartbeat_patch":True,
+        "nfm_profile_get_round_trip":True,
+        "discovery_round_trip":True,
         "request_verified":True,
         "response_verified":True,
         "request_response_bound_by_cycle_nonce":True,
-        "cycle":req.cycle,
-        "nonce":req.nonce,
+        "replay_rejected_after_native_heartbeat":True,
+        "stale_rejected_after_native_heartbeat":True,
+        "tamper_rejected_after_native_heartbeat":True,
+        "valid_update_after_negative_cases":True,
+        "cycles_verified":[7001,7004],
         "policy_sha256":policy_digest,
         "telemetry_digest":telemetry_digest,
-        "removed_cleanly":True,
+        "clean_removal_via_empty_custom_info_heartbeat":True,
+        "legacy_top_level_x_stage39_kie_absent":True,
+        "backward_compatible_clean_discovery":True,
         "standardization":
-            "research vendor extension; no new standardized 3GPP IE claimed",
+            "KIE itself is not a standardized 3GPP IE; it is carried in "
+            "the schema-defined NFProfile.customInfo extension container",
     }
 
 
@@ -1516,7 +1698,7 @@ async def main_async(
         native_mutations=await run_native_mutations(
             clean,witness,live_policy,external_mutation_control
         )
-        kie_sbi_extension=await run_kie_sbi_vendor_extension(
+        kie_sbi_extension=await run_kie_nfprofile_heartbeat(
             clean,live_policy
         )
 
@@ -1755,13 +1937,14 @@ async def main_async(
             )
             + f"- KIE bound to live evidence: "
             f"{report['kie_bound_to_live_evidence']}\n"
-            f"- KIE carried in live Nnrf discovery vendor extension: "
+            f"- KIE native NFProfile.customInfo heartbeat round-trip: "
             f"{kie_sbi_extension['verified']}\n"
         )
         print(json.dumps(report,indent=2,ensure_ascii=False))
     finally:
         MUTATION_ENABLE.unlink(missing_ok=True)
         KIE_EXTENSION_PATH.unlink(missing_ok=True)
+        KIE_HEARTBEAT_PATH.unlink(missing_ok=True)
         stop_all(processes)
 
 
