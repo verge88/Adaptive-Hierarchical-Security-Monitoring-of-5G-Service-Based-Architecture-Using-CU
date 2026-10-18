@@ -98,6 +98,24 @@ jobs:
           test "$sidecar_status" -eq 0
           cat stage41_live_out/STAGE41_RESULT.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Archive public verification material without private keys
+        if: success()
+        run: |
+          set -euo pipefail
+          cp stage41_live_keys/policy.pub stage41_live_out/policy-public.pem
+          cp stage41_live_keys/live_policy.sig stage41_live_out/policy-signature.bin
+          cp stage41_live_keys/lifecycle.pub stage41_live_out/lifecycle-public.pem
+          cp stage41_live_keys/witness.pub stage41_live_out/witness-public.pem
+          cp stage41_live_control/lifecycle_events.json stage41_live_out/signed_lifecycle_events.json
+          cp stage39/live_open5gs/live_policy.json stage41_live_out/independent_live_policy.json
+          (
+            cd stage41_live_out
+            sha256sum policy-public.pem policy-signature.bin lifecycle-public.pem \
+              witness-public.pem signed_lifecycle_events.json \
+              independent_live_policy.json stage41_report.json \
+              stage41_witness_snapshots.json > stage41_evidence_sha256.txt
+          )
+
       - name: Live core diagnostics
         if: failure()
         run: |
