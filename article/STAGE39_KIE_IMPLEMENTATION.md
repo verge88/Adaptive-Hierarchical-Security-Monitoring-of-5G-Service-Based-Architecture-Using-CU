@@ -12,13 +12,14 @@ Stage39 не суммируются с 256 сценариями Stage38 и до�
 | 1 | Oracle-эталон зависел от NRF | Существенно закрыто | Отдельная full-profile policy для 9 типов / 13 слотов, ECDSA-подпись policy, отрицательный tamper-test, KIE связывает policy digest |
 | 2 | Registry poisoning / CVE-класс | Существенно закрыто | Реальная ложная регистрация в NRF, плюс live FQDN/service poisoning matrix: 18/18 защищённых случаев |
 | 3 | Ложные тревоги определялись transition-plan | Существенно закрыто | Внешний подписанный orchestrator-event source, 5000 случайных событий, causal verifier без будущего состояния, сильные lifecycle-aware baselines |
-| 4 | Узкие лабораторные условия | Существенно расширено | 13 live Open5GS процессов / 9 NF типов, 225 native mutations, 55k+ benign lifecycle events за 2 минуты, live mTLS discovery load |
+| 4 | Узкие лабораторные условия | Существенно расширено | 13 live Open5GS процессов / 9 NF типов, 225 native mutations, 40 500 benign lifecycle events за 2 минуты, live mTLS discovery load |
 | 5 | Future state / отсутствие real-time | Существенно закрыто | Нет post-reference из будущего; три latency clocks, включая onset timestamp из отдельного sidecar-controller |
 | 6 | Witness не показывал информационного вклада | Закрыто экспериментальной абляцией | Identity: policy-only 0/36, witness-only 36/36, combined 36/36; service/FQDN наоборот зависят от policy |
-| 7 | КИЕ не была частью исполняемого Nnrf пути | Существенно закрыто | KIE request/response проходит через реальный Open5GS Nnrf discovery JSON в поле `x-stage39-kie`, MAC/freshness/binding проверяются |
+| 7 | КИЕ не была частью исполняемого Nnrf пути | **Закрыто на уровне реализации** | KIE request/response переносится в schema-defined `NFProfile.customInfo`, проходит через нативный Open5GS `nnrf-nfm` heartbeat PATCH, сохраняется в NRF state и round-trip через NFM GET + Nnrf discovery; replay/stale/tamper отвергаются |
 
-Оставшиеся границы перечислены в конце документа. В частности, Stage39 не объявляет
-исследовательское поле `x-stage39-kie` новым стандартизованным 3GPP IE.
+Оставшиеся границы перечислены в конце документа. Контейнер `NFProfile.customInfo` является
+частью схемы NFProfile TS 29.510, однако содержимое KIE внутри него остаётся исследовательским
+расширением и не объявляется новым стандартизованным 3GPP IE.
 
 ## 1. Независимый и подписанный oracle-policy
 
@@ -140,11 +141,11 @@ count/status дополнительно пропускает часть атак
 Создан `.github/workflows/stage39-churn.yml`.
 
 PR validation выполняет 2 минуты wall-clock benign lifecycle churn. Подтверждённый run обработал
-**55 500 подписанных lifecycle events** за 121.8 секунды:
+**40 500 подписанных lifecycle events** за 120.31 секунды:
 
-- restart: 31 198;
-- stop: 12 180;
-- start: 12 122;
+- restart: 22 742;
+- stop: 8 895;
+- start: 8 863;
 - false alerts: 0.
 
 Каждый batch создаётся отдельным generator process с новым случайным seed. Future post-reference
@@ -171,18 +172,18 @@ traffic.
 От начала локального discovery request до результата combined detector:
 
 - sample count: 225;
-- median примерно 1.14 ms;
-- p95 примерно 1.35 ms;
-- max менее 2 ms в подтверждённом run.
+- median **0.748 ms**;
+- p95 **0.876 ms**;
+- max **1.128 ms** в подтверждённом run.
 
 ### NRF mutation hook → alert
 
 Timestamp записывается `CLOCK_MONOTONIC` непосредственно после изменения response внутри NRF:
 
 - sample count: 225;
-- median примерно 0.62 ms;
-- p95 примерно 0.74 ms;
-- max менее 1 ms в подтверждённом run.
+- median **0.390 ms**;
+- p95 **0.484 ms**;
+- max **0.538 ms** в подтверждённом run.
 
 ### External sidecar controller onset → alert
 
@@ -191,9 +192,9 @@ Timestamp записывается `CLOCK_MONOTONIC` непосредствен�
 после detector decision:
 
 - 225/225 команд подтверждены;
-- median примерно **2.34 ms**;
-- p95 примерно **3.28 ms**;
-- max примерно **3.63 ms**.
+- median **1.925 ms**;
+- p95 **2.921 ms**;
+- max **3.795 ms**.
 
 Эта третья метрика включает межконтейнерный handoff, discovery, mutation в NRF и detector.
 Она намного ближе к end-to-end laboratory latency, но timestamp всё ещё принадлежит
@@ -237,54 +238,62 @@ provenance channel, а не к математической невозможно
 Оба контейнера остаются на одном GitHub runner/kernel; физически независимый host/TPM/TEE
 эксперимент не заявляется.
 
-## 7. Исполняемая КИЕ и перенос через Nnrf SBI
+## 7. Исполняемая КИЕ в нативном Nnrf_NFManagement пути
 
-В `research/stage39_kie.py` реализованы:
+В `research/stage39_kie.py` реализованы `KIE_REQUEST`/`KIE_RESPONSE`, controller/subject ID,
+монотонный cycle, timestamp, 128-bit nonce, policy digest, telemetry digest, HMAC-SHA256,
+persistent freshness anchor и sealed recovery mirror. Отдельные тесты продолжают проверять
+tamper, stale, replay, response/request binding, restart recovery и fail-closed при полной
+потере freshness state.
 
-- `KIE_REQUEST`;
-- `KIE_RESPONSE`;
-- controller/subject IDs;
-- monotonic cycle;
-- timestamp;
-- 128-bit nonce;
-- policy digest;
-- telemetry digest;
-- HMAC-SHA256;
-- persistent freshness anchor;
-- sealed recovery mirror.
+Для закрытия исходного замечания КИЕ больше **не зависит от произвольного top-level поля
+discovery response**. В Open5GS v2.7.6 используется существующий schema-defined контейнер
+`NFProfile.customInfo`, присутствующий в модели NFProfile TS 29.510.
 
-Проверяются tamper, stale message, replay cycle, replay nonce, response/request binding,
-replay после restart, восстановление primary state и fail-closed при полной потере primary+mirror.
+Build-time patch `stage39/live_open5gs/patch_nfprofile_custom_info.py` обеспечивает три
+необходимых свойства живого Open5GS:
 
-Дополнительно Stage39 теперь переносит реальную KIE request/response pair через **живой
-Open5GS Nnrf discovery response**.
+1. входящий `NFProfile.customInfo` сохраняется в состоянии NF instance внутри NRF;
+2. штатный builder NFProfile возвращает сохранённый `customInfo` через NFM profile GET и
+   Nnrf discovery;
+3. штатный `ogs_nnrf_nfm_build_update()` живой NSSF добавляет `/customInfo` к своему
+   **нативному heartbeat PATCH**, а NRF обрабатывает этот PatchItem.
 
-Патч `stage39/live_open5gs/stage39-nnrf-handler.c` добавляет top-level vendor field:
+В live-тесте KIE проходит цепочку:
 
-`x-stage39-kie`
+`NSSF process → native Open5GS heartbeat PATCH → nnrf-nfm → NRF internal NF state →
+individual NFM GET / nnrf-disc → verifier`.
 
-в сериализованный Nnrf discovery JSON. В поле передаются KIE request, MAC и связанный
-KIE response с отдельным MAC. Live probe затем:
+Подтверждённый run 39114423432 получил следующие результаты:
 
-1. получает обычный Nnrf discovery response по HTTP/2;
-2. извлекает `x-stage39-kie`;
-3. проверяет request HMAC;
-4. проверяет freshness/cycle/nonce;
-5. проверяет policy/telemetry binding;
-6. проверяет response HMAC;
-7. проверяет связь response с тем же request через cycle/nonce;
-8. удаляет extension source и убеждается, что последующий clean response поля не содержит.
-
-В подтверждённом live run:
-
-- request verified: true;
-- response verified: true;
+- `schema_defined_container = NFProfile.customInfo`;
+- `schema_source = 3GPP TS 29.510 NFProfile`;
+- `native_open5gs_heartbeat_patch = true`;
+- `nfm_profile_get_round_trip = true`;
+- `discovery_round_trip = true`;
+- request HMAC verified: true;
+- response HMAC verified: true;
 - request/response cycle+nonce binding: true;
-- extension removed cleanly: true.
+- replay после повторного нативного heartbeat отвергнут;
+- stale KIE, реально прошедшая через heartbeat/NRF/discovery, отвергнута;
+- KIE с изменённым MAC, реально прошедшая тем же путём, отвергнута;
+- после отрицательных случаев новый корректный cycle принят;
+- проверены валидные cycles 7001 и 7004;
+- очистка через heartbeat с пустым `customInfo` успешно удаляет KIE;
+- legacy top-level `x-stage39-kie` отсутствует;
+- после удаления сохраняется обычный backward-compatible discovery.
 
-Это реальная интеграция в Nnrf SBI serialization path Open5GS, но **vendor extension является
-исследовательским механизмом и не объявляется стандартизованным 3GPP IE**. Основной out-of-band
-KIE path сохраняется как отдельный control/provenance channel.
+Старый код инъекции top-level `x-stage39-kie` удалён из
+`stage39-nnrf-handler.c`; live evidence теперь формируется только через NFProfile/NFM path.
+
+Таким образом исходный пункт «КИЕ отсутствует в реализации / не входит в исполняемый SBI path»
+закрыт: KIE является реальным сообщением, которое проходит через работающий Open5GS NF,
+его штатный heartbeat-механизм, Nnrf_NFManagement, состояние NRF и последующее чтение.
+
+Научная граница формулируется уже иначе: **сам KIE payload остаётся research-defined**.
+Стандартизованным является контейнер `NFProfile.customInfo`, а не семантика KIE. Поэтому
+работа не заявляет появление нового 3GPP KIE IE и не требует такого заявления для
+экспериментального доказательства реализации.
 
 ## 8. Live Open5GS coverage
 
@@ -352,7 +361,7 @@ production-grade доказательство. Остаются:
 - SBI load не является настоящей UE registration/PDU-session нагрузкой;
 - external-controller onset является лабораторным attacker trigger, а не timestamp
   неконтролируемого удалённого нарушителя;
-- `x-stage39-kie` — vendor extension, не стандартизованный 3GPP IE;
+- KIE payload внутри schema-defined `NFProfile.customInfo` остаётся research-defined и не является новым стандартизованным 3GPP IE;
 - native Open5GS OAuth2 authorization flow не подтверждён;
 - N32/SEPP interoperability/conformance не выполнялся;
 - нет TPM/TEE/remote-attestation измерения executable/container image;
