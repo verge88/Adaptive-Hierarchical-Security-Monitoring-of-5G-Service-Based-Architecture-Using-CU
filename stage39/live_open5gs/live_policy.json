@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "policy_id": "stage39-live-open5gs-independent-policy-v1",
+  "slots": {
+    "nrf1": {
+      "nf_type": "NRF",
+      "endpoint": "127.0.0.10",
+      "fqdn": "",
+      "service_names": [
+        "nnrf-disc",
+        "nnrf-nfm"
+      ]
+    },
+    "scp1": {
+      "nf_type": "SCP",
+      "endpoint": "127.0.0.11",
+      "fqdn": "",
+      "service_names": []
+    },
+    "nssf1": {
+      "nf_type": "NSSF",
+      "endpoint": "127.0.0.12",
+      "fqdn": "",
+      "service_names": [
+        "nnssf-nsselection"
+      ]
+    },
+    "nssf2": {
+      "nf_type": "NSSF",
+      "endpoint": "127.0.0.13",
+      "fqdn": "",
+      "service_names": [
+        "nnssf-nsselection"
+      ]
+    },
+    "ausf1": {
+      "nf_type": "AUSF",
+      "endpoint": "127.0.0.14",
+      "fqdn": "",
+      "service_names": [
+        "nausf-auth"
+      ]
+    },
+    "ausf2": {
+      "nf_type": "AUSF",
+      "endpoint": "127.0.0.15",
+      "fqdn": "",
+      "service_names": [
+        "nausf-auth"
+      ]
+    },
+    "bsf1": {
+      "nf_type": "BSF",
+      "endpoint": "127.0.0.16",
+      "fqdn": "",
+      "service_names": [
+        "nbsf-management"
+      ]
+    },
+    "bsf2": {
+      "nf_type": "BSF",
+      "endpoint": "127.0.0.17",
+      "fqdn": "",
+      "service_names": [
+        "nbsf-management"
+      ]
+    },
+    "udm1": {
+      "nf_type": "UDM",
+      "endpoint": "127.0.0.18",
+      "fqdn": "",
+      "service_names": [
+        "nudm-sdm",
+        "nudm-ueau",
+        "nudm-uecm"
+      ]
+    },
+    "udm2": {
+      "nf_type": "UDM",
+      "endpoint": "127.0.0.19",
+      "fqdn": "",
+      "service_names": [
+        "nudm-sdm",
+        "nudm-ueau",
+        "nudm-uecm"
+      ]
+    },
+    "amf1": {
+      "nf_type": "AMF",
+      "endpoint": "127.0.0.20",
+      "fqdn": "",
+      "service_names": [
+        "namf-comm"
+      ]
+    },
+    "smf1": {
+      "nf_type": "SMF",
+      "endpoint": "127.0.0.21",
+      "fqdn": "",
+      "service_names": [
+        "nsmf-pdusession"
+      ]
+    },
+    "pcf1": {
+      "nf_type": "PCF",
+      "endpoint": "127.0.0.22",
+      "fqdn": "",
+      "service_names": [
+        "npcf-am-policy-control",
+        "npcf-policyauthorization",
+        "npcf-smpolicycontrol"
+      ]
+    }
+  }
+}

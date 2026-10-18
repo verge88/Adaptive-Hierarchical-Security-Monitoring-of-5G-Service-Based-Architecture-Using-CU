@@ -1,0 +1,44 @@
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/amf1.log
+global:
+amf:
+  sbi:
+    server:
+      - address: 127.0.0.20
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80
+  ngap:
+    server:
+      - address: 127.0.0.20
+  guami:
+    - plmn_id:
+        mcc: 999
+        mnc: 70
+      amf_id:
+        region: 2
+        set: 1
+  tai:
+    - plmn_id:
+        mcc: 999
+        mnc: 70
+      tac: 1
+  plmn_support:
+    - plmn_id:
+        mcc: 999
+        mnc: 70
+      s_nssai:
+        - sst: 1
+  security:
+    integrity_order: [NIA2, NIA1, NIA0]
+    ciphering_order: [NEA0, NEA1, NEA2]
+  network_name:
+    full: Stage39
+    short: S39
+  amf_name: stage39-amf1
+  time:
+    t3512:
+      value: 540

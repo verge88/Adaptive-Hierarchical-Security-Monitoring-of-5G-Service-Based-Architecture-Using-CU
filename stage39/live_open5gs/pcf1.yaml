@@ -1,0 +1,14 @@
+db_uri: mongodb://127.0.0.1/open5gs
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/pcf1.log
+global:
+pcf:
+  sbi:
+    server:
+      - address: 127.0.0.22
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80

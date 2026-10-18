@@ -1,0 +1,128 @@
+name: Stage39 KIE streaming integrity
+on:
+  push:
+    branches: ['codex/stage39-kie-actions']
+    paths:
+      - '.github/workflows/stage39-kie-integrity.yml'
+      - 'research/stage39_kie.py'
+      - 'research/stage39_transport_probe.py'
+      - 'research/stage39_external_scenarios.py'
+      - 'research/stage39_orchestration_eval.py'
+      - 'research/test_stage39_kie.py'
+      - 'stage39/full_profile_policy.json'
+      - 'article/STAGE39_KIE_IMPLEMENTATION.md'
+  pull_request:
+    paths:
+      - '.github/workflows/stage39-kie-integrity.yml'
+      - 'research/stage39_kie.py'
+      - 'research/stage39_transport_probe.py'
+      - 'research/stage39_external_scenarios.py'
+      - 'research/stage39_orchestration_eval.py'
+      - 'research/test_stage39_kie.py'
+      - 'stage39/full_profile_policy.json'
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: 'Clean streaming soak duration in seconds for the main CI run'
+        required: false
+        default: '10'
+permissions:
+  contents: read
+
+concurrency:
+  group: stage39-kie-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kie-streaming:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SOAK_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.soak_seconds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Unit and boundary tests
+        run: python -m unittest discover -s research -p 'test_stage39_kie.py' -v
+
+      - name: Sign independent full-profile oracle policy
+        run: |
+          set -euo pipefail
+          mkdir -p stage39_out
+          openssl ecparam -name prime256v1 -genkey -noout \
+            -out "$RUNNER_TEMP/stage39-policy.key"
+          openssl ec -in "$RUNNER_TEMP/stage39-policy.key" -pubout \
+            -out stage39_out/stage39-policy.pub
+          openssl dgst -sha256 \
+            -sign "$RUNNER_TEMP/stage39-policy.key" \
+            -out stage39_out/stage39-policy.sig \
+            stage39/full_profile_policy.json
+          openssl dgst -sha256 \
+            -verify stage39_out/stage39-policy.pub \
+            -signature stage39_out/stage39-policy.sig \
+            stage39/full_profile_policy.json
+          sha256sum stage39/full_profile_policy.json \
+            > stage39_out/stage39-policy.sha256
+
+      - name: Run KIE and causal streaming integration
+        run: |
+          python research/stage39_kie.py \
+            --policy stage39/full_profile_policy.json \
+            --output stage39_out \
+            --soak-seconds "$SOAK_SECONDS"
+
+      - name: Generate independent signed lifecycle stream
+        run: |
+          set -euo pipefail
+          openssl rand -hex 32 > "$RUNNER_TEMP/stage39-orchestrator.key"
+          openssl rand -hex 16 > "$RUNNER_TEMP/stage39-orchestrator.seed"
+          KEY_HEX="$(cat "$RUNNER_TEMP/stage39-orchestrator.key")"
+          SEED="$(cat "$RUNNER_TEMP/stage39-orchestrator.seed")"
+          python research/stage39_external_scenarios.py \
+            --policy stage39/full_profile_policy.json \
+            --events stage39_out/orchestrator_events.jsonl \
+            --labels stage39_out/orchestrator_labels.jsonl \
+            --key-hex "$KEY_HEX" \
+            --seed "$SEED" \
+            --count 5000 \
+            --attack-rate 0.30
+          sha256sum "$RUNNER_TEMP/stage39-orchestrator.seed" \
+            > stage39_out/orchestrator_seed_file.sha256
+
+      - name: Evaluate signed orchestration and strong baselines
+        run: |
+          set -euo pipefail
+          KEY_HEX="$(cat "$RUNNER_TEMP/stage39-orchestrator.key")"
+          python research/stage39_orchestration_eval.py \
+            --policy stage39/full_profile_policy.json \
+            --events stage39_out/orchestrator_events.jsonl \
+            --labels stage39_out/orchestrator_labels.jsonl \
+            --key-hex "$KEY_HEX" \
+            --output stage39_out
+
+      - name: Exercise mTLS, OAuth2 client credentials and edge protection
+        run: python research/stage39_transport_probe.py --output stage39_out
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo '## Stage39 KIE / streaming'
+            echo
+            test -f stage39_out/stage39_report.md && cat stage39_out/stage39_report.md || true
+            echo
+            test -f stage39_out/stage39_orchestration_report.md && cat stage39_out/stage39_orchestration_report.md || true
+            echo
+            echo 'Transport report: stage39_out/transport_security_report.json'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage39-kie-streaming-evidence
+          path: stage39_out/
+          if-no-files-found: warn
+          retention-days: 90

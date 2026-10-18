@@ -1,0 +1,159 @@
+name: Stage39 live Open5GS nine-type coverage
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage39-live-open5gs.yml'
+      - 'stage39/live_open5gs/**'
+      - 'stage39/full_profile_policy.json'
+      - 'article/STAGE39_KIE_IMPLEMENTATION.md'
+      - 'research/stage39_kie.py'
+      - 'stage38/patch_sbi_context.py'
+      - 'stage38/external_testbed/*.yaml'
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: stage39-live-open5gs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-open5gs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MongoDB for live PCF
+        run: |
+          set -euo pipefail
+          docker run -d --name stage39-mongo --network host mongo:7 \
+            --bind_ip 127.0.0.1 --port 27017
+          for attempt in $(seq 1 60); do
+            if docker exec stage39-mongo mongosh --quiet \
+              --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs stage39-mongo
+          exit 1
+
+      - name: Build Open5GS v2.7.6 Stage39 image
+        run: docker build -f stage39/live_open5gs/Dockerfile -t stage39-live-open5gs .
+
+      - name: Run live core with independent witness sidecar
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            stage39_live_out \
+            stage39_live_control \
+            stage39_live_witness \
+            stage39_live_attack_control \
+            stage39_live_keys
+
+          openssl ecparam -name prime256v1 -genkey -noout \
+            -out stage39_live_keys/witness.key
+          openssl ec -in stage39_live_keys/witness.key -pubout \
+            -out stage39_live_keys/witness.pub
+          openssl rand -hex 32 > stage39_live_keys/challenge.txt
+
+          openssl ecparam -name prime256v1 -genkey -noout \
+            -out stage39_live_keys/policy.key
+          openssl ec -in stage39_live_keys/policy.key -pubout \
+            -out stage39_live_keys/policy.pub
+          openssl dgst -sha256 \
+            -sign stage39_live_keys/policy.key \
+            -out stage39_live_keys/live_policy.sig \
+            stage39/live_open5gs/live_policy.json
+          openssl dgst -sha256 \
+            -verify stage39_live_keys/policy.pub \
+            -signature stage39_live_keys/live_policy.sig \
+            stage39/live_open5gs/live_policy.json
+
+          chmod 600 \
+            stage39_live_keys/witness.key \
+            stage39_live_keys/policy.key
+
+          docker run -d --name stage39-core --network host \
+            -v "$PWD/stage39_live_out:/out" \
+            -v "$PWD/stage39_live_control:/control" \
+            -v "$PWD/stage39_live_witness:/run/stage39/witness" \
+            -v "$PWD/stage39_live_attack_control:/attack-control" \
+            -v "$PWD/stage39_live_keys/witness.pub:/keys/witness.pub:ro" \
+            -v "$PWD/stage39_live_keys/challenge.txt:/keys/challenge.txt:ro" \
+            -v "$PWD/stage39_live_keys/policy.pub:/keys/policy.pub:ro" \
+            -v "$PWD/stage39_live_keys/live_policy.sig:/keys/live_policy.sig:ro" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/live_probe.py \
+              --output /out \
+              --external-witness /control/external_witness.json \
+              --external-witness-public-key /keys/witness.pub \
+              --external-witness-challenge /keys/challenge.txt \
+              --external-mutation-control /attack-control \
+              --policy-public-key /keys/policy.pub \
+              --policy-signature /keys/live_policy.sig
+
+          sidecar_rc=0
+          docker run --rm \
+            --pid=container:stage39-core \
+            --network host \
+            -v "$PWD/stage39_live_control:/control" \
+            -v "$PWD/stage39_live_witness:/run/stage39/witness:ro" \
+            -v "$PWD/stage39_live_keys/witness.key:/keys/witness.key:ro" \
+            -v "$PWD/stage39_live_keys/challenge.txt:/keys/challenge.txt:ro" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/external_witness.py \
+              --output /control/external_witness.json \
+              --private-key /keys/witness.key \
+              --challenge /keys/challenge.txt \
+              --timeout-seconds 60 || sidecar_rc=$?
+
+          driver_rc=0
+          docker run --rm \
+            -v "$PWD/stage39_live_attack_control:/attack-control" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/external_attack_driver.py \
+              --control-dir /attack-control \
+              --timeout-seconds 180 || driver_rc=$?
+
+          core_rc=$(docker wait stage39-core)
+          docker logs stage39-core
+          test "$sidecar_rc" -eq 0
+          test "$driver_rc" -eq 0
+          test "$core_rc" -eq 0
+          cp stage39_live_attack_control/driver_report.json \
+            stage39_live_out/external_driver_report.json
+          cat stage39_live_out/live_open5gs_report.md \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run live Open5GS mutual-TLS SBI probe
+        run: |
+          set -euo pipefail
+          mkdir -p stage39_live_out/mtls
+          docker run --rm --network host \
+            -v "$PWD/stage39_live_out/mtls:/out" \
+            stage39-live-open5gs \
+            python3 /opt/stage39/mtls_probe.py --output /out
+          cat stage39_live_out/mtls/live_open5gs_mtls_report.md \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Core and MongoDB diagnostics
+        if: failure()
+        run: |
+          docker logs stage39-core || true
+          docker logs stage39-mongo || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f stage39-core >/dev/null 2>&1 || true
+          docker rm -f stage39-mongo >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage39-live-open5gs-evidence
+          path: stage39_live_out/
+          if-no-files-found: warn
+          retention-days: 90

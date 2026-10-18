@@ -1,0 +1,28 @@
+logger:
+  level: info
+  file:
+    path: /var/log/open5gs/smf1.log
+global:
+smf:
+  sbi:
+    server:
+      - address: 127.0.0.21
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80
+  pfcp:
+    server:
+      - address: 127.0.0.21
+  gtpc:
+    server:
+      - address: 127.0.0.21
+  gtpu:
+    server:
+      - address: 127.0.0.21
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+  dns:
+    - 8.8.8.8
+  mtu: 1400
