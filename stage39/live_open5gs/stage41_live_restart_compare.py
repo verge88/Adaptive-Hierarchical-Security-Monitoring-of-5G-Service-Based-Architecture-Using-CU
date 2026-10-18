@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import signal
+import subprocess
 import statistics
 import time
 from pathlib import Path
@@ -203,7 +204,7 @@ def kill_and_restart(slot, processes):
     os.killpg(old_pid, signal.SIGTERM)
     try:
         old.wait(timeout=8)
-    except TimeoutError:
+    except subprocess.TimeoutExpired:
         os.killpg(old_pid, signal.SIGKILL)
         old.wait(timeout=5)
     if old.poll() is None:
