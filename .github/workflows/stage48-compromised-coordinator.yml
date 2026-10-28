@@ -1,0 +1,62 @@
+name: Stage48 compromised coordinator and independent audit
+on:
+  push:
+    branches: [experiment/stage48-compromised-coordinator]
+    paths: ["stage48/**",".github/workflows/stage48-compromised-coordinator.yml"]
+  pull_request:
+    paths: ["stage48/**",".github/workflows/stage48-compromised-coordinator.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  malicious-coordinator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover signed Stage46 verifier transcripts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p transcript out
+          gh run download 40687450694 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU --pattern 'stage46-g*-r*' -D transcript
+          find transcript -type f -name 'stage46-g*-r*.json' | sort
+          test "$(find transcript -type f -name 'stage46-g*-r*.json' | wc -l)" -eq 12
+      - name: Emit honest and deliberately malicious coordinator claims
+        run: |
+          python3 stage48/stage48_coordinator_audit.py make-claims --transcript transcript --out out/stage48_claims.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage48-signed-transcript-and-claims
+          path: |
+            transcript/
+            out/stage48_claims.json
+          retention-days: 90
+
+  independent-auditor:
+    needs: malicious-coordinator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage48-signed-transcript-and-claims
+          path: input
+      - name: Independently recompute every global decision
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python3 stage48/stage48_coordinator_audit.py audit \
+            --transcript input/transcript --claims input/out/stage48_claims.json \
+            --out out/stage48_report.json | tee out/stage48_summary.txt
+          python3 -m json.tool out/stage48_report.json >/dev/null
+      - name: Hash evidence
+        run: (cd out && sha256sum stage48_report.json stage48_summary.txt > stage48_sha256.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage48-compromised-coordinator-evidence
+          path: out/
+          retention-days: 90
