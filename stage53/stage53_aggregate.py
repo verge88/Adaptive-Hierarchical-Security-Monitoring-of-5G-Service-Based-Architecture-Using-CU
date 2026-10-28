@@ -33,8 +33,7 @@ def main():
     runner_names=sorted(set(str(x.get("runner_name")) for x in metas))
     hostnames=sorted(set(str(x.get("hostname")) for x in metas))
     machine_ids=sorted(set(str(x.get("machine_id_sha256")) for x in metas))
-    report={
-      "schema":"stage53-multiworker-aggregate-v1",
+    overlap_start=max(x["ready_unix"] for x in results)\n    overlap_stop=min(x["stop_unix"] for x in results)\n    simultaneous_overlap_seconds=max(0.0,overlap_stop-overlap_start)\n    report={\n      "schema":"stage53-multiworker-aggregate-v1",
       "workers":len(results),"expected_workers":a.expected_workers,
       "requested_nf_total":total,"live_processes_total":live,
       "witness_records_total":witnesses,
@@ -50,7 +49,7 @@ def main():
       "registration_convergence_seconds_median":statistics.median(x["registration_convergence_seconds"] for x in results),
       "cgroup_memory_current_after_hold_total":sum(x.get("cgroup_memory_current_after_hold") or 0 for x in results),
       "rss_kib_total_sum":sum(x.get("rss_kib_total") or 0 for x in results),
-      "bulk_discovery_success_workers":sum(bool(x.get("bulk_discovery_ok")) for x in results),
+      "simultaneous_overlap_seconds":simultaneous_overlap_seconds,\n      "bulk_discovery_success_workers":sum(bool(x.get("bulk_discovery_ok")) for x in results),
       "all_worker_checks_passed":all(x.get("all_checks_passed") is True for x in results),
     }
     checks={
@@ -63,7 +62,7 @@ def main():
       "all_uuid_hashes_unique":len(hashes)==a.expected_total and unique_uuid_hashes==a.expected_total,
       "one_binary_build_hash":len(binary_hashes)==1,
       "all_worker_checks_passed":report["all_worker_checks_passed"],
-      "runner_meta_complete":len(metas)==a.expected_workers,
+      "runner_meta_complete":len(metas)==a.expected_workers,\n      "positive_simultaneous_overlap":simultaneous_overlap_seconds>=5.0,
     }
     report["checks"]=checks
     report["all_checks_passed"]=all(checks.values())
