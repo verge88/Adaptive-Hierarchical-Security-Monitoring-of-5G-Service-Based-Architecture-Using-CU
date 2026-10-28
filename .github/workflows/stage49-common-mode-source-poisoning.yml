@@ -1,0 +1,37 @@
+name: Stage49 common-mode source poisoning
+on:
+  push:
+    branches: [experiment/stage49-common-mode-source-poisoning]
+    paths: ["stage49/**",".github/workflows/stage49-common-mode-source-poisoning.yml"]
+  pull_request:
+    paths: ["stage49/**",".github/workflows/stage49-common-mode-source-poisoning.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  common-mode-poisoning:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover immutable Open5GS-derived Stage44 seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src data out
+          gh run download 39148421353 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU -n stage42-eighty-live-restarts-evidence -D src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed --artifact-dir src --seed data/stage44_seed.json
+          sha256sum data/stage44_seed.json
+      - name: Compare baseline with lifecycle-bound UUID anchor
+        run: |
+          set -euo pipefail
+          python3 stage49/stage49_common_mode.py --seed data/stage44_seed.json --out out/stage49_report.json | tee out/stage49_summary.txt
+          python3 -m json.tool out/stage49_report.json >/dev/null
+          (cd out && sha256sum stage49_report.json stage49_summary.txt > stage49_sha256.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage49-common-mode-poisoning-evidence
+          path: out/
+          retention-days: 90
