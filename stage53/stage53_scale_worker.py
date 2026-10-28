@@ -242,8 +242,10 @@ async def main_async(args):
             workers.append(p)
             if i%args.batch==0: time.sleep(args.batch_pause)
         launch_done=time.time()
-        last_count=0;discovery_bytes=0;rows=[];last_error=None
         deadline=time.time()+args.converge_timeout
+        pids=[p.pid for p in workers]
+
+        # First prove that every launched NSSF emitted a native runtime UUID.
         while time.time()<deadline:
             if nrf.poll() is not None:
                 diag={"schema":"stage53-control-process-exit-v1","component":"nrf","returncode":nrf.returncode,
@@ -260,29 +262,61 @@ async def main_async(args):
                 print(json.dumps(diag,indent=2),flush=True)
                 raise RuntimeError(f"SCP exited rc={scp.returncode}")
             dead=sum(p.poll() is not None for p in workers)
-            if dead: raise RuntimeError(f"{dead} NSSF processes exited before convergence")
-            try:
-                rows,discovery_bytes=await discover_nssf();last_count=len(rows);last_error=None
-                wit=read_witness()
-                if len(rows)==args.count and all(p.pid in wit for p in workers): break
-            except Exception as exc:
-                last_error=f"{type(exc).__name__}: {exc}"
-            await asyncio.sleep(.25)
+            if dead:
+                raise RuntimeError(f"{dead} NSSF processes exited before convergence")
+            wit=read_witness()
+            if all(pid in wit for pid in pids):
+                break
+            await asyncio.sleep(.1)
         else:
-            diag={"schema":"stage53-timeout-v1","worker":args.worker,"requested":args.count,
-              "discovery_count":last_count,"witness_files":len(read_witness()),
-              "live_processes":sum(p.poll() is None for p in workers),
-              "last_discovery_error":last_error,"nrf_returncode":nrf.poll(),
-              "scp_returncode":scp.poll() if scp is not None else None,
-              "nrf_log_tail":tail(nrf_log_path),"scp_log_tail":tail(scp_log_path)}
-            (out/"failure_diagnostic.json").write_text(json.dumps(diag,indent=2)+"\n")
-            print(json.dumps(diag,indent=2),flush=True)
-            raise RuntimeError(f"convergence timeout discovery={last_count} witness={len(read_witness())} error={last_error}")
-        ready=time.time()
-        pids=[p.pid for p in workers]
+            raise RuntimeError(
+                f"native witness timeout "
+                f"{sum(pid in read_witness() for pid in pids)}/{args.count}"
+            )
+
         wit=read_witness()
-        discovered_ids=[str(r.get("nfInstanceId","")).lower() for r in rows]
-        witness_ids=[wit[p]["nf_instance_id"] for p in pids if p in wit]
+        witness_ids=[wit[pid]["nf_instance_id"] for pid in pids]
+        docs,pending,nfm_bytes,last_nfm_errors=await verify_registered_profiles(
+            witness_ids,deadline
+        )
+        if pending:
+            diag={"schema":"stage53-nfm-timeout-v1","worker":args.worker,
+              "requested":args.count,"verified_nfm_profiles":len(docs),
+              "pending_profiles":len(pending),
+              "sample_pending_uuid_hashes":[
+                  hashlib.sha256(x.encode()).hexdigest()
+                  for x in sorted(pending)[:10]
+              ],
+              "sample_errors":dict(list(last_nfm_errors.items())[:10]),
+              "live_processes":sum(p.poll() is None for p in workers),
+              "nrf_returncode":nrf.poll(),
+              "scp_returncode":scp.poll() if scp is not None else None,
+              "nrf_log_tail":tail(nrf_log_path)}
+            (out/"failure_diagnostic.json").write_text(
+                json.dumps(diag,indent=2)+"\n"
+            )
+            print(json.dumps(diag,indent=2),flush=True)
+            raise RuntimeError(
+                f"NFM registration verification timeout "
+                f"{len(docs)}/{args.count}"
+            )
+
+        # Large SearchResult is a separate scalability property. It is recorded
+        # but does not invalidate registrations already proven individually.
+        bulk_discovery_ok=False
+        bulk_discovery_count=None
+        discovery_bytes=0
+        bulk_discovery_error=None
+        rows=[]
+        try:
+            rows,discovery_bytes=await discover_nssf()
+            bulk_discovery_count=len(rows)
+            bulk_discovery_ok=(len(rows)==args.count)
+        except Exception as exc:
+            bulk_discovery_error=f"{type(exc).__name__}: {exc}"
+
+        ready=time.time()
+        discovered_ids=sorted(docs)
         reachable=sum(tcp_ready(h,p,.12) for h,p in endpoints)
         before={pid:proc_status(pid) for pid in pids}
         before={k:v for k,v in before.items() if v}
