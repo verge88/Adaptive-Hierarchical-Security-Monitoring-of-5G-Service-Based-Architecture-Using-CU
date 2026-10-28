@@ -49,3 +49,19 @@ GitHub Actions run: 40702723583, conclusion: success.
 ## Следующая граница
 
 Для закрытия последнего уровня требуется hardware-backed workload identity: TPM quote, confidential-VM attestation или TEE-attested key, где приватный ключ доступен только измеренному runtime. Это нельзя честно заменить одним GitHub OIDC token.
+
+
+## Boundary-control: OIDC не является process attestation
+
+Отдельный контрольный запуск выполнялся без живого Open5GS NF. Новый GitHub Actions job сгенерировал собственный Ed25519-ключ, запросил новый GitHub OIDC token с audience, привязанной к SHA-256 этого ключа, и сформировал синтетическое process evidence с корректными UUID и executable hash, взятыми из подтверждённого live Stage52 run.
+
+Внешний Render verifier принял это сфабрикованное состояние. Это ожидаемый и принципиально важный отрицательный результат: GitHub OIDC удостоверяет workload/job identity и целостность соответствующих OIDC claims, но не доказывает существование конкретного NF-процесса и не связывает ключ с аппаратно измеренным runtime.
+
+- Boundary run: 40703567681, conclusion: success.
+- Fabricated process state accepted: true.
+- Live NF present in boundary job: false.
+- Boundary agent public-key SHA-256: `d4fb86639a9ade6194d4234fee10bbc90f97a67a76d357e6e414a72938b4739b`.
+- Boundary artifact ID: 12822991466.
+- Boundary artifact ZIP SHA-256: `e3a1cf871ed6bd3b4359b5e9a756632aea3d3f2f59f6c7939d35c824b94201ff`.
+
+Следовательно, Stage52 закрывает пробел между статическим oracle и живым process-bound evidence при честной границе runner/agent, но одновременно экспериментально показывает, что provider OIDC нельзя трактовать как TPM/TEE attestation. Для следующего уровня необходим non-exportable hardware-backed key, связанный с измерением runtime (например, TPM quote, confidential-VM attestation или TEE report).
