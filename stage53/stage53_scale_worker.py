@@ -33,10 +33,12 @@ def endpoint_for(worker,index):
     if port>65535: raise ValueError("worker/index exceeds port allocation")
     return "127.0.0.12",port
 
-def nrf_config():
-    return """logger:
+def nrf_config(peer_limit):
+    return f"""logger:
   level: error
 global:
+  max:
+    peer: {peer_limit}
 nrf:
   serving:
     - plmn_id:
@@ -48,10 +50,12 @@ nrf:
         port: 80
 """
 
-def scp_config():
-    return """logger:
+def scp_config(peer_limit):
+    return f"""logger:
   level: error
 global:
+  max:
+    peer: {peer_limit}
 scp:
   sbi:
     server:
@@ -179,8 +183,9 @@ async def main_async(args):
     out=Path(args.output);out.mkdir(parents=True,exist_ok=True)
     ROOT.mkdir(parents=True,exist_ok=True);WITNESS.mkdir(parents=True,exist_ok=True)
     for p in WITNESS.glob("*.tsv"):p.unlink()
-    (ROOT/"nrf.yaml").write_text(nrf_config())
-    (ROOT/"scp.yaml").write_text(scp_config())
+    peer_limit=max(1024,args.count+128)
+    (ROOT/"nrf.yaml").write_text(nrf_config(peer_limit))
+    (ROOT/"scp.yaml").write_text(scp_config(peer_limit))
     env={**os.environ,"STAGE38_WITNESS_DIR":str(WITNESS)}
     nrf=subprocess.Popen([NRF_BIN,"-c",str(ROOT/"nrf.yaml")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
     workers=[];scp=None
@@ -245,7 +250,7 @@ async def main_async(args):
         threads=[after[p]["threads"] for p in common]
         result={
           "schema":"stage53-live-open5gs-scale-v1","open5gs_ref":"v2.7.6",
-          "worker":args.worker,"requested_nf":args.count,
+          "worker":args.worker,"requested_nf":args.count,"nrf_scp_peer_limit":peer_limit,
           "live_processes":sum(p.poll() is None for p in workers),
           "unique_pids":len(set(pids)),"witness_records":len(witness_ids),
           "unique_witness_uuids":len(set(witness_ids)),
