@@ -10,6 +10,7 @@ from h2.events import DataReceived,ResponseReceived,StreamEnded,StreamReset
 ROOT=Path("/tmp/stage53")
 WITNESS=Path("/run/stage53/witness")
 NRF_BIN="/src/open5gs/build/src/nrf/open5gs-nrfd"
+SCP_BIN="/src/open5gs/build/src/scp/open5gs-scpd"
 NSSF_BIN="/src/open5gs/build/src/nssf/open5gs-nssfd"
 NRF_HOST="127.0.0.10"; PORT=80
 
@@ -45,6 +46,20 @@ nrf:
     server:
       - address: 127.0.0.10
         port: 80
+"""
+
+def scp_config():
+    return """logger:
+  level: error
+global:
+scp:
+  sbi:
+    server:
+      - address: 127.0.0.11
+        port: 80
+    client:
+      nrf:
+        - uri: http://127.0.0.10:80
 """
 
 def nssf_config(address,port):
@@ -165,13 +180,17 @@ async def main_async(args):
     ROOT.mkdir(parents=True,exist_ok=True);WITNESS.mkdir(parents=True,exist_ok=True)
     for p in WITNESS.glob("*.tsv"):p.unlink()
     (ROOT/"nrf.yaml").write_text(nrf_config())
+    (ROOT/"scp.yaml").write_text(scp_config())
     env={**os.environ,"STAGE38_WITNESS_DIR":str(WITNESS)}
     nrf=subprocess.Popen([NRF_BIN,"-c",str(ROOT/"nrf.yaml")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
-    workers=[]
+    workers=[];scp=None
     t0=time.time()
     try:
         wait_tcp(NRF_HOST,PORT,30)
-        time.sleep(1.0)
+        time.sleep(.5)
+        scp=subprocess.Popen([SCP_BIN,"-c",str(ROOT/"scp.yaml")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
+        wait_tcp("127.0.0.11",80,30)
+        time.sleep(.5)
         endpoints=[]
         for i in range(1,args.count+1):
             host,port=endpoint_for(args.worker,i);endpoints.append((host,port))
@@ -270,7 +289,7 @@ async def main_async(args):
         if not result["all_checks_passed"]: raise RuntimeError("Stage53 integrity checks failed")
         print(json.dumps(result,indent=2,sort_keys=True))
     finally:
-        terminate(workers+[nrf])
+        terminate(workers+([scp] if scp is not None else [])+[nrf])
 
 def main():
     ap=argparse.ArgumentParser()
