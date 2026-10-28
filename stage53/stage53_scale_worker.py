@@ -123,6 +123,38 @@ async def discover_nssf():
     if not isinstance(rows,list): raise RuntimeError("missing nfInstances")
     return rows,len(body)
 
+
+async def nfm_get_profile(nf_id):
+    st,body=await h2_get(f"/nnrf-nfm/v1/nf-instances/{nf_id}",timeout=8)
+    if st!=200:
+        raise RuntimeError(f"NFM GET {nf_id} status={st} body={body[:300]!r}")
+    doc=json.loads(body)
+    if str(doc.get("nfInstanceId","")).lower()!=str(nf_id).lower():
+        raise RuntimeError(f"NFM UUID mismatch for {nf_id}")
+    if doc.get("nfType")!="NSSF":
+        raise RuntimeError(f"NFM type mismatch for {nf_id}: {doc.get('nfType')}")
+    if doc.get("nfStatus")!="REGISTERED":
+        raise RuntimeError(f"NFM status mismatch for {nf_id}: {doc.get('nfStatus')}")
+    return doc,len(body)
+
+async def verify_registered_profiles(nf_ids,deadline):
+    pending=set(str(x).lower() for x in nf_ids)
+    docs={};bytes_total=0;last_errors={}
+    while pending and time.time()<deadline:
+        for nf_id in list(pending):
+            if time.time()>=deadline: break
+            try:
+                doc,n=await nfm_get_profile(nf_id)
+                docs[nf_id]=doc
+                bytes_total+=n
+                pending.remove(nf_id)
+                last_errors.pop(nf_id,None)
+            except Exception as exc:
+                last_errors[nf_id]=f"{type(exc).__name__}: {exc}"
+        if pending:
+            await asyncio.sleep(.2)
+    return docs,pending,bytes_total,last_errors
+
 def proc_status(pid):
     d={}
     try:
