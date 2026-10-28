@@ -60,7 +60,7 @@ def reconstruct(idx,case_id):
         b,h=group_quorum(idx[(case_id,g)])
         if meta is None: meta=(b["n"],b["trial"],b["attack"])
         alerts.extend(b["alerts"]); ids.extend(b["uuid_tags"]); gh.append([g,h])
-    global_alerts=merge(alerts,ids)
+    global_alerts=[list(x) for x in merge(alerts,ids)]
     digest=sha({"case_id":case_id,"group_quorum_hashes":gh,"alerts":global_alerts})
     return {"case_id":case_id,"n":meta[0],"trial":meta[1],"attack":meta[2],
             "group_quorum_hashes":gh,"alerts":global_alerts,"transcript_digest":digest}
