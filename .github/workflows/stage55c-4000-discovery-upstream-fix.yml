@@ -5,6 +5,7 @@ on:
     branches: [experiment/stage55-nrf-bulk-discovery]
     paths:
       - ".github/docker/stage55c-open5gs-backport.Dockerfile"
+      - ".github/docker/patch_stage55c_v276_h2_response.py"
       - ".github/workflows/stage55c-4000-discovery-upstream-fix.yml"
       - "stage55/stage55_discovery_scale.py"
   workflow_dispatch:
