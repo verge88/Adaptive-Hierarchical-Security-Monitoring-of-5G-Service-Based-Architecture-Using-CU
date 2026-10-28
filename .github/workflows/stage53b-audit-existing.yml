@@ -1,0 +1,112 @@
+name: Stage53B audit existing 1000-live-NF evidence
+
+on:
+  push:
+    branches: [experiment/stage53-live-nf-scale]
+    paths: [".github/workflows/stage53b-audit-existing.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download four successful 250-NF worker artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage53b_downloads stage53b_audit
+          gh run download 40718981055             -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU             -p 'stage53b-worker-*-evidence'             -D stage53b_downloads
+          find stage53b_downloads -type f | sort
+
+      - name: Independently audit 1000-NF simultaneity and identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          root=Path("stage53b_downloads")
+          results=[]; hashes=[]; metas=[]
+          for p in sorted(root.rglob("result.json")):
+              d=json.loads(p.read_text())
+              results.append(d)
+              hashes += [x.strip() for x in (p.parent/"uuid_hashes.txt").read_text().splitlines() if x.strip()]
+              metas.append(json.loads((p.parent/"runner_meta.json").read_text()))
+          if len(results)!=4:
+              raise SystemExit(f"worker result count={len(results)}")
+          total=sum(x["requested_nf"] for x in results)
+          live=sum(x["live_processes"] for x in results)
+          nfm=sum(x["nrf_individually_verified_profiles"] for x in results)
+          wit=sum(x["witness_records"] for x in results)
+          sbi=sum(x["direct_sbi_reachable"] for x in results)
+          overlap_start=max(x["ready_unix"] for x in results)
+          overlap_stop=min(x["stop_unix"] for x in results)
+          overlap=max(0.0,overlap_stop-overlap_start)
+          bh=sorted(set(x["binary_sha256"] for x in results))
+          runner_names=sorted(set(str(x.get("runner_name")) for x in metas))
+          hostnames=sorted(set(str(x.get("hostname")) for x in metas))
+          mids=sorted(set(str(x.get("machine_id_sha256")) for x in metas))
+          boots=sorted(set(str(x.get("boot_id_sha256")) for x in metas))
+          report={
+            "schema":"stage53b-existing-evidence-audit-v1",
+            "source_run_id":40718981055,
+            "workers":len(results),
+            "requested_nf_total":total,
+            "live_processes_total":live,
+            "witness_records_total":wit,
+            "nrf_individually_verified_profiles_total":nfm,
+            "direct_sbi_reachable_total":sbi,
+            "uuid_hash_records":len(hashes),
+            "globally_unique_uuid_hashes":len(set(hashes)),
+            "simultaneous_overlap_seconds":overlap,
+            "binary_sha256_values":bh,
+            "unique_runner_names":len(runner_names),
+            "unique_hostnames":len(hostnames),
+            "unique_machine_id_hashes":len(mids),
+            "unique_boot_id_hashes":len(boots),
+            "registration_convergence_seconds_median":statistics.median(x["registration_convergence_seconds"] for x in results),
+            "registration_convergence_seconds_max":max(x["registration_convergence_seconds"] for x in results),
+            "cgroup_memory_current_after_hold_total":sum(x.get("cgroup_memory_current_after_hold") or 0 for x in results),
+            "bulk_discovery_success_workers":sum(bool(x.get("bulk_discovery_ok")) for x in results),
+            "all_worker_checks_passed":all(x.get("all_checks_passed") is True for x in results),
+          }
+          checks={
+            "workers_4":len(results)==4,
+            "total_1000":total==1000,
+            "live_1000":live==1000,
+            "witness_1000":wit==1000,
+            "nfm_verified_1000":nfm==1000,
+            "sbi_reachable_1000":sbi==1000,
+            "global_uuid_unique":len(hashes)==1000 and len(set(hashes))==1000,
+            "binary_hash_identical":len(bh)==1,
+            "simultaneous_overlap_at_least_5s":overlap>=5.0,
+            "worker_checks":report["all_worker_checks_passed"],
+          }
+          report["checks"]=checks
+          report["all_checks_passed"]=all(checks.values())
+          out=Path("stage53b_audit/result.json")
+          out.write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
+          Path("stage53b_audit/STAGE53B_AUDIT.md").write_text(
+              "# Stage53B 1000-live-NF audit\n\n"+
+              "\n".join(f"- {k}: {v}" for k,v in report.items() if k!="checks")+
+              "\n- checks: "+json.dumps(checks,sort_keys=True)+"\n")
+          print(json.dumps(report,indent=2,sort_keys=True))
+          if not report["all_checks_passed"]:
+              raise SystemExit("Stage53B audit failed")
+          PY
+          cat stage53b_audit/STAGE53B_AUDIT.md >> "$GITHUB_STEP_SUMMARY"
+          (cd stage53b_audit && sha256sum result.json STAGE53B_AUDIT.md > stage53b_audit_sha256.txt)
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53b-1000-live-nf-audit-evidence
+          path: stage53b_audit/
+          retention-days: 90

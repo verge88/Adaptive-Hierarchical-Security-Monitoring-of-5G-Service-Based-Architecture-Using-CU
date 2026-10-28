@@ -1,0 +1,97 @@
+name: Stage53B 1000 live Open5GS NF multi-runner
+
+on:
+  push:
+    branches: [experiment/stage53-live-nf-scale]
+    paths:
+      - "stage53/**"
+      - ".github/workflows/stage53b-1000-live-nf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  worker:
+    name: worker-${{ matrix.worker }}-250-live-NF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        worker: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build minimal Open5GS 2.7.6 scale image
+        run: docker build -f stage53/Dockerfile -t stage53-open5gs .
+
+      - name: Run 250 genuine NSSF instances
+        run: |
+          set -euo pipefail
+          OUT="stage53b_worker_${{ matrix.worker }}"
+          mkdir -p "$OUT"
+          python3 - <<'PY' > "$OUT/runner_meta.json"
+          import hashlib,json,os,pathlib,socket
+          def fh(p):
+              try: return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+              except Exception: return None
+          print(json.dumps({
+            "runner_name":os.getenv("RUNNER_NAME"),
+            "runner_os":os.getenv("RUNNER_OS"),
+            "runner_arch":os.getenv("RUNNER_ARCH"),
+            "hostname":socket.gethostname(),
+            "machine_id_sha256":fh("/etc/machine-id"),
+            "boot_id_sha256":fh("/proc/sys/kernel/random/boot_id"),
+          },sort_keys=True))
+          PY
+          docker run --rm --name "stage53b-${{ matrix.worker }}" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             stage53-open5gs             python3 /opt/stage53/stage53_scale_worker.py               --count 250 --worker ${{ matrix.worker }}               --hold-seconds 300 --converge-timeout 480               --batch 25 --batch-pause 0.05 --output /out
+          cat "$OUT/STAGE53_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
+          (cd "$OUT" && sha256sum result.json ready.json uuid_hashes.txt runner_meta.json STAGE53_RESULT.md > stage53b_worker_sha256.txt)
+
+      - name: Host diagnostics
+        if: failure()
+        run: |
+          docker ps -a || true
+          free -h || true
+          ulimit -a || true
+          ps -eLf | wc -l || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53b-worker-${{ matrix.worker }}-evidence
+          path: stage53b_worker_${{ matrix.worker }}/
+          retention-days: 90
+
+  aggregate:
+    name: aggregate-1000-live-NF
+    needs: worker
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage53b-worker-*-evidence
+          path: stage53b_downloads
+
+      - name: Verify 1000 live-NF aggregate
+        run: |
+          set -euo pipefail
+          find stage53b_downloads -maxdepth 3 -type f | sort
+          mkdir -p stage53b_aggregate
+          python3 stage53/stage53_aggregate.py             --root stage53b_downloads             --expected-workers 4             --expected-total 1000             --out stage53b_aggregate/result.json
+          cat stage53b_aggregate/result.md >> "$GITHUB_STEP_SUMMARY"
+          (cd stage53b_aggregate && sha256sum result.json result.md > stage53b_aggregate_sha256.txt)
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53b-1000-live-nf-aggregate-evidence
+          path: stage53b_aggregate/
+          retention-days: 90

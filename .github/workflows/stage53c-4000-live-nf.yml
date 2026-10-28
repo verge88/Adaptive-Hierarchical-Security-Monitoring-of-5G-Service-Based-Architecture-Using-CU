@@ -1,0 +1,164 @@
+name: Stage53C 4000 live Open5GS NF multi-runner
+
+on:
+  push:
+    branches: [experiment/stage53-live-nf-scale]
+    paths: [".github/workflows/stage53c-4000-live-nf.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  worker:
+    name: worker-${{ matrix.worker }}-500-live-NF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        worker: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build minimal Open5GS 2.7.6 scale image
+        run: docker build -f stage53/Dockerfile -t stage53-open5gs .
+
+      - name: Run 500 genuine NSSF instances
+        run: |
+          set -euo pipefail
+          OUT="stage53c_worker_${{ matrix.worker }}"
+          mkdir -p "$OUT"
+          python3 - <<'PY' > "$OUT/runner_meta.json"
+          import hashlib,json,os,pathlib,socket
+          def fh(p):
+              try: return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+              except Exception: return None
+          print(json.dumps({
+            "runner_name":os.getenv("RUNNER_NAME"),
+            "runner_os":os.getenv("RUNNER_OS"),
+            "runner_arch":os.getenv("RUNNER_ARCH"),
+            "hostname":socket.gethostname(),
+            "machine_id_sha256":fh("/etc/machine-id"),
+            "boot_id_sha256":fh("/proc/sys/kernel/random/boot_id"),
+          },sort_keys=True))
+          PY
+          docker run --rm --name "stage53c-${{ matrix.worker }}" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             stage53-open5gs             python3 /opt/stage53/stage53_scale_worker.py               --count 500 --worker ${{ matrix.worker }}               --hold-seconds 900 --converge-timeout 600               --batch 25 --batch-pause 0.05 --output /out
+          cat "$OUT/STAGE53_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
+          (cd "$OUT" && sha256sum result.json ready.json uuid_hashes.txt runner_meta.json STAGE53_RESULT.md > stage53c_worker_sha256.txt)
+
+      - name: Host diagnostics
+        if: failure()
+        run: |
+          docker ps -a || true
+          free -h || true
+          ulimit -a || true
+          ps -eLf | wc -l || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53c-worker-${{ matrix.worker }}-evidence
+          path: stage53c_worker_${{ matrix.worker }}/
+          retention-days: 90
+
+  aggregate:
+    name: aggregate-4000-live-NF
+    needs: worker
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage53c-worker-*-evidence
+          path: stage53c_downloads
+
+      - name: Verify 4000 genuine live NF and simultaneous overlap
+        run: |
+          set -euo pipefail
+          mkdir -p stage53c_aggregate
+          python3 - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          root=Path("stage53c_downloads")
+          results=[]; hashes=[]; metas=[]
+          for p in sorted(root.rglob("result.json")):
+              results.append(json.loads(p.read_text()))
+              hashes += [x.strip() for x in (p.parent/"uuid_hashes.txt").read_text().splitlines() if x.strip()]
+              metas.append(json.loads((p.parent/"runner_meta.json").read_text()))
+          if len(results)!=8:
+              raise SystemExit(f"worker result count={len(results)}; expected 8")
+          total=sum(x["requested_nf"] for x in results)
+          live=sum(x["live_processes"] for x in results)
+          wit=sum(x["witness_records"] for x in results)
+          nfm=sum(x["nrf_individually_verified_profiles"] for x in results)
+          sbi=sum(x["direct_sbi_reachable"] for x in results)
+          overlap_start=max(x["ready_unix"] for x in results)
+          overlap_stop=min(x["stop_unix"] for x in results)
+          overlap=max(0.0,overlap_stop-overlap_start)
+          binaries=sorted(set(x["binary_sha256"] for x in results))
+          runner_names=sorted(set(str(x.get("runner_name")) for x in metas))
+          hostnames=sorted(set(str(x.get("hostname")) for x in metas))
+          mids=sorted(set(str(x.get("machine_id_sha256")) for x in metas))
+          boots=sorted(set(str(x.get("boot_id_sha256")) for x in metas))
+          report={
+            "schema":"stage53c-4000-live-nf-aggregate-v1",
+            "workers":len(results),
+            "requested_nf_total":total,
+            "live_processes_total":live,
+            "witness_records_total":wit,
+            "nrf_individually_verified_profiles_total":nfm,
+            "direct_sbi_reachable_total":sbi,
+            "uuid_hash_records":len(hashes),
+            "globally_unique_uuid_hashes":len(set(hashes)),
+            "simultaneous_overlap_seconds":overlap,
+            "binary_sha256_values":binaries,
+            "unique_runner_names":len(runner_names),
+            "unique_hostnames":len(hostnames),
+            "unique_machine_id_hashes":len(mids),
+            "unique_boot_id_hashes":len(boots),
+            "registration_convergence_seconds_median":statistics.median(x["registration_convergence_seconds"] for x in results),
+            "registration_convergence_seconds_max":max(x["registration_convergence_seconds"] for x in results),
+            "cgroup_memory_current_after_hold_total":sum(x.get("cgroup_memory_current_after_hold") or 0 for x in results),
+            "rss_kib_total_sum":sum(x.get("rss_kib_total") or 0 for x in results),
+            "bulk_discovery_success_workers":sum(bool(x.get("bulk_discovery_ok")) for x in results),
+            "all_worker_checks_passed":all(x.get("all_checks_passed") is True for x in results),
+          }
+          checks={
+            "workers_8":len(results)==8,
+            "total_4000":total==4000,
+            "live_4000":live==4000,
+            "witness_4000":wit==4000,
+            "nfm_verified_4000":nfm==4000,
+            "sbi_reachable_4000":sbi==4000,
+            "global_uuid_unique":len(hashes)==4000 and len(set(hashes))==4000,
+            "binary_hash_identical":len(binaries)==1,
+            "simultaneous_overlap_at_least_30s":overlap>=30.0,
+            "worker_checks":report["all_worker_checks_passed"],
+            "runner_meta_complete":len(metas)==8,
+          }
+          report["checks"]=checks
+          report["all_checks_passed"]=all(checks.values())
+          Path("stage53c_aggregate/result.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
+          Path("stage53c_aggregate/STAGE53C_RESULT.md").write_text(
+            "# Stage53C 4000-live-NF aggregate\n\n"+
+            "\n".join(f"- {k}: {v}" for k,v in report.items() if k!="checks")+
+            "\n- checks: "+json.dumps(checks,sort_keys=True)+"\n")
+          print(json.dumps(report,indent=2,sort_keys=True))
+          if not report["all_checks_passed"]:
+              raise SystemExit("Stage53C aggregate failed")
+          PY
+          cat stage53c_aggregate/STAGE53C_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+          (cd stage53c_aggregate && sha256sum result.json STAGE53C_RESULT.md > stage53c_aggregate_sha256.txt)
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53c-4000-live-nf-aggregate-evidence
+          path: stage53c_aggregate/
+          retention-days: 90

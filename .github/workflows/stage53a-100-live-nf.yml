@@ -1,0 +1,35 @@
+name: Stage53A 100 live Open5GS NF density
+on:
+  push:
+    branches: [experiment/stage53-live-nf-scale]
+    paths: ["stage53/**",".github/workflows/stage53a-100-live-nf.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stage53a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build minimal Open5GS 2.7.6 scale image
+        run: docker build -f stage53/Dockerfile -t stage53-open5gs .
+      - name: Run 100 genuine NSSF instances
+        run: |
+          set -euo pipefail
+          mkdir -p stage53a_out
+          docker run --rm --name stage53a --network host             --pids-limit=-1             -v "$PWD/stage53a_out:/out"             stage53-open5gs             python3 /opt/stage53/stage53_scale_worker.py               --count 100 --worker 0 --hold-seconds 20 --output /out
+          cat stage53a_out/STAGE53_RESULT.md >> "$GITHUB_STEP_SUMMARY"
+          (cd stage53a_out && sha256sum result.json ready.json STAGE53_RESULT.md > stage53a_sha256.txt)
+      - name: Host diagnostics
+        if: failure()
+        run: |
+          docker ps -a || true
+          free -h || true
+          ulimit -a || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage53a-100-live-nf-evidence
+          path: stage53a_out/
+          retention-days: 90
