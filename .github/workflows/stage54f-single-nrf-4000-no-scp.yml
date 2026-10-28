@@ -1,0 +1,71 @@
+name: Stage54F single NRF 4000 without SCP
+
+on:
+  push:
+    branches: [experiment/stage54-single-nrf-scale]
+    paths:
+      - "stage54/stage54f_single_nrf_no_scp.py"
+      - ".github/workflows/stage54f-single-nrf-4000-no-scp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  single-nrf-4000-no-scp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add 8 GiB swap
+        run: |
+          set -euo pipefail
+          mkdir -p stage54f_4000
+          free -b > stage54f_4000/host_memory_before_swap.txt
+          cat /proc/swaps > stage54f_4000/swaps_before.txt
+          sudo fallocate -l 8G /mnt/stage54f-extra.swap
+          sudo chmod 600 /mnt/stage54f-extra.swap
+          sudo mkswap /mnt/stage54f-extra.swap
+          sudo swapon /mnt/stage54f-extra.swap
+          free -b > stage54f_4000/host_memory_after_swap.txt
+          cat /proc/swaps > stage54f_4000/swaps_after_add.txt
+
+      - name: Build Open5GS 2.7.6 image
+        run: docker build -f stage53/Dockerfile -t stage54f-open5gs .
+
+      - name: Run one NRF with 4000 genuine NSSF and no SCP
+        run: |
+          set -uo pipefail
+          OUT="stage54f_4000"
+          NAME="stage54f-4000"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage54/stage54f_single_nrf_no_scp.py:/opt/stage54f.py:ro"             stage54f-open5gs             python3 /opt/stage54f.py               --count 4000 --worker 0               --hold-seconds 60               --converge-timeout 1800               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          if [ "$RC" -eq 0 ]; then
+            cat "$OUT/STAGE54_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
+            (cd "$OUT" && sha256sum result.json ready.json uuid_hashes.txt STAGE54_RESULT.md > stage54f_sha256.txt)
+          fi
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage54f_4000"
+          NAME="stage54f-4000"
+          mkdir -p "$OUT"
+          free -b > "$OUT/host_memory_after_run.txt" || true
+          cat /proc/swaps > "$OUT/swaps_after_run.txt" || true
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state_after.json" 2>&1 || true
+          docker logs "$NAME" --tail 800 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          sudo swapoff /mnt/stage54f-extra.swap || true
+          sudo rm -f /mnt/stage54f-extra.swap || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage54f-single-nrf-4000-no-scp-evidence
+          path: stage54f_4000/
+          retention-days: 90
