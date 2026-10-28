@@ -1,0 +1,71 @@
+name: Stage55A single NRF 4000 bulk discovery boundary
+
+on:
+  push:
+    branches: [experiment/stage55-nrf-bulk-discovery]
+    paths:
+      - "stage55/**"
+      - ".github/workflows/stage55a-nrf-discovery-boundary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add 8 GiB swap
+        run: |
+          set -euo pipefail
+          mkdir -p stage55a_out
+          free -b > stage55a_out/host_memory_before_swap.txt
+          cat /proc/swaps > stage55a_out/swaps_before.txt
+          sudo fallocate -l 8G /mnt/stage55-extra.swap
+          sudo chmod 600 /mnt/stage55-extra.swap
+          sudo mkswap /mnt/stage55-extra.swap
+          sudo swapon /mnt/stage55-extra.swap
+          free -b > stage55a_out/host_memory_after_swap.txt
+          cat /proc/swaps > stage55a_out/swaps_after_add.txt
+
+      - name: Build Open5GS 2.7.6 image
+        run: docker build -f stage53/Dockerfile -t stage55-open5gs .
+
+      - name: Run 4000 live NSSF behind one NRF and sweep discovery limits
+        run: |
+          set -uo pipefail
+          OUT="stage55a_out"
+          NAME="stage55a-4000"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage55/stage55_discovery_scale.py:/opt/stage55.py:ro"             stage55-open5gs             python3 /opt/stage55.py               --count 4000 --worker 0               --hold-seconds 30               --converge-timeout 1800               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          if [ "$RC" -eq 0 ]; then
+            cat "$OUT/STAGE54_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
+            (cd "$OUT" && sha256sum result.json discovery_sweep.json ready.json uuid_hashes.txt STAGE54_RESULT.md > stage55a_sha256.txt)
+          fi
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage55a_out"
+          NAME="stage55a-4000"
+          mkdir -p "$OUT"
+          free -b > "$OUT/host_memory_after_run.txt" || true
+          cat /proc/swaps > "$OUT/swaps_after_run.txt" || true
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state_after.json" 2>&1 || true
+          docker logs "$NAME" --tail 1200 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          sudo swapoff /mnt/stage55-extra.swap || true
+          sudo rm -f /mnt/stage55-extra.swap || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage55a-4000-discovery-boundary-evidence
+          path: stage55a_out/
+          retention-days: 90
