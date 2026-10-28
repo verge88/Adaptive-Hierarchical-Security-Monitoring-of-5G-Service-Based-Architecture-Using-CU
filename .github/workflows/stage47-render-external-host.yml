@@ -1,0 +1,100 @@
+name: Stage47 GitHub-to-Render external host validation
+
+on:
+  push:
+    branches:
+      - experiment/stage47-render-external-host
+    paths:
+      - "stage47/**"
+      - ".github/workflows/stage47-render-external-host.yml"
+  pull_request:
+    paths:
+      - "stage47/**"
+      - ".github/workflows/stage47-render-external-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cross-provider-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      STAGE47_RENDER_URL: https://stage47-render-verifier-fixed.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recover immutable Open5GS-derived Stage44 seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage47_src stage47_data stage47_out
+          gh run download 39148421353 \
+            -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU \
+            -n stage42-eighty-live-restarts-evidence -D stage47_src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed \
+            --artifact-dir stage47_src --seed stage47_data/stage44_seed.json
+          sha256sum stage47_data/stage44_seed.json
+
+      - name: Confirm external Render service and network separation
+        run: |
+          set -euo pipefail
+          getent ahostsv4 stage47-render-verifier.onrender.com || true
+          python3 - <<'PY'
+          import json,time,urllib.request
+          url="https://stage47-render-verifier-fixed.onrender.com/health"
+          last=None
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(url,timeout=20) as r:
+                      x=json.loads(r.read())
+                  print(json.dumps(x,indent=2))
+                  assert x["host"]["provider"]=="render"
+                  break
+              except Exception as e:
+                  last=e
+                  time.sleep(4)
+          else:
+              raise SystemExit("Render health unavailable: "+repr(last))
+          PY
+
+      - name: Run cross-host exact-equivalence experiment
+        run: |
+          set -euo pipefail
+          python3 stage47/stage47_cross_host.py \
+            --seed stage47_data/stage44_seed.json \
+            --render-url "$STAGE47_RENDER_URL" \
+            --output stage47_out/stage47_report.json | tee stage47_out/stage47_summary.txt
+          python3 -m json.tool stage47_out/stage47_report.json >/dev/null
+          {
+            echo "### Stage47 GitHub-to-Render external-host validation"
+            echo
+            echo "Independent semantic verification over public HTTPS on Render Frankfurt."
+            echo
+            python3 - <<'PY'
+          import json
+          r=json.load(open("stage47_out/stage47_report.json"))
+          print(f"- Global cases: {r['global_cases']}")
+          print(f"- Remote group checks: {r['remote_group_checks']}")
+          print(f"- All global decisions equal local: {r['all_global_results_equal_local']}")
+          print(f"- Benign false-alert cases: {r['benign_false_alert_cases']}")
+          print(f"- Attacked detected cases: {r['attacked_detected_cases']}")
+          print(f"- Median HTTPS RTT: {r['network']['rtt_ms_median']} ms")
+          print(f"- Render host: {r['render_host']}")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hash evidence
+        run: |
+          set -euo pipefail
+          (cd stage47_out && sha256sum stage47_report.json stage47_summary.txt > stage47_sha256.txt)
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage47-render-external-host-evidence
+          path: stage47_out/
+          retention-days: 90
