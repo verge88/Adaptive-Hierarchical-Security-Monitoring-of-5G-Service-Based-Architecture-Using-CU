@@ -1,0 +1,55 @@
+name: Stage55D three-fix discovery sanity
+
+on:
+  push:
+    branches: [experiment/stage55-nrf-bulk-discovery]
+    paths:
+      - ".github/docker/stage55d-open5gs-three-fix.Dockerfile"
+      - ".github/docker/patch_stage55d_v276_defer_send.py"
+      - "stage55/stage55d_three_fix_sanity.py"
+      - ".github/workflows/stage55d-three-fix-sanity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  three-fix-sanity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Open5GS 2.7.6 with three upstream HTTP2 fixes
+        run: |
+          docker build             -f .github/docker/stage55d-open5gs-three-fix.Dockerfile             -t stage55d-open5gs .
+          docker run --rm stage55d-open5gs cat /opt/stage55d_backport.txt             | tee stage55d_backport_provenance.txt
+
+      - name: Run 100 live NSSF and discovery sanity
+        run: |
+          set -uo pipefail
+          OUT="stage55d_out"
+          NAME="stage55d-sanity"
+          mkdir -p "$OUT"
+          cp stage55d_backport_provenance.txt "$OUT/"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage55/stage55d_three_fix_sanity.py:/opt/stage55d.py:ro"             stage55d-open5gs             python3 /opt/stage55d.py               --count 100 --worker 0               --hold-seconds 5               --converge-timeout 300               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage55d_out"
+          NAME="stage55d-sanity"
+          mkdir -p "$OUT"
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          docker logs "$NAME" --tail 1200 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage55d-three-fix-discovery-sanity-evidence
+          path: stage55d_out/
+          retention-days: 90
