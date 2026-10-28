@@ -342,11 +342,15 @@ async def main_async(args):
           "live_processes":sum(p.poll() is None for p in workers),
           "unique_pids":len(set(pids)),"witness_records":len(witness_ids),
           "unique_witness_uuids":len(set(witness_ids)),
-          "nrf_discovered_profiles":len(rows),
-          "unique_discovered_uuids":len(set(discovered_ids)),
-          "witness_discovery_uuid_sets_equal":set(witness_ids)==set(discovered_ids),
+          "nrf_individually_verified_profiles":len(docs),
+          "unique_nfm_profile_uuids":len(set(discovered_ids)),
+          "witness_nfm_uuid_sets_equal":set(witness_ids)==set(discovered_ids),
+          "nfm_response_bytes_total":nfm_bytes,
+          "bulk_discovery_ok":bulk_discovery_ok,
+          "bulk_discovery_count":bulk_discovery_count,
+          "bulk_discovery_response_bytes":discovery_bytes,
+          "bulk_discovery_error":bulk_discovery_error,
           "direct_sbi_reachable":reachable,
-          "discovery_response_bytes":discovery_bytes,
           "registration_convergence_seconds":ready-t0,
           "launch_seconds":launch_done-t0,
           "hold_seconds":args.hold_seconds,
@@ -368,12 +372,15 @@ async def main_async(args):
           "all_pids_unique":result["unique_pids"]==args.count,
           "all_witnesses_present":result["witness_records"]==args.count,
           "all_witness_uuids_unique":result["unique_witness_uuids"]==args.count,
-          "all_profiles_discovered":result["nrf_discovered_profiles"]==args.count,
-          "all_discovered_uuids_unique":result["unique_discovered_uuids"]==args.count,
-          "witness_matches_nrf":result["witness_discovery_uuid_sets_equal"],
+          "all_profiles_individually_verified":result["nrf_individually_verified_profiles"]==args.count,
+          "all_nfm_uuids_unique":result["unique_nfm_profile_uuids"]==args.count,
+          "witness_matches_nrf":result["witness_nfm_uuid_sets_equal"],
           "all_sbi_reachable":result["direct_sbi_reachable"]==args.count,
         }
         result["checks"]=checks;result["all_checks_passed"]=all(checks.values())
+        (out/"uuid_hashes.txt").write_text(
+            "\n".join(sorted(hashlib.sha256(x.encode()).hexdigest() for x in witness_ids))+"\n"
+        )
         (out/"result.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
         (out/"STAGE53_RESULT.md").write_text(
           "# Stage53 live Open5GS scale worker\n"+
