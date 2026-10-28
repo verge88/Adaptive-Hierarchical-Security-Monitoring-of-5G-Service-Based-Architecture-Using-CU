@@ -51,6 +51,9 @@ replacement="""static int session_send(ogs_sbi_session_t *sbi_sess)
 if needle not in s:
     raise SystemExit("session_send function marker not found")
 
+start=s.index("static int session_send(ogs_sbi_session_t *sbi_sess)\n{")
+end=s.index("static void session_write_callback", start)
+seg=s[start:end]
 marker="""    ogs_assert(sbi_sess);
     ogs_assert(sbi_sess->session);
 
@@ -65,8 +68,10 @@ newmarker="""    ogs_assert(sbi_sess);
 
 #if USE_SEND_DATA_WITH_NO_COPY
 """
-# There should be only one such pair in session_send in v2.7.6.
-one(marker,newmarker,"session_send defer")
+if seg.count(marker) != 1:
+    raise SystemExit(f"session_send defer: expected one marker, found {seg.count(marker)}")
+seg=seg.replace(marker,newmarker,1)
+s=s[:start]+seg+s[end:]
 
 p.write_text(s)
 for marker in (
