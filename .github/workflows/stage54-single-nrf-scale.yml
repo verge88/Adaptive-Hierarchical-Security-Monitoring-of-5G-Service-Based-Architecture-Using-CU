@@ -1,0 +1,70 @@
+name: Stage54 single NRF live NF scale
+
+on:
+  push:
+    branches: [experiment/stage54-single-nrf-scale]
+    paths:
+      - "stage54/**"
+      - ".github/workflows/stage54-single-nrf-scale.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  single-nrf-scale:
+    name: one-NRF-${{ matrix.count }}-live-NSSF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        count: [1000, 1500, 2000]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Open5GS 2.7.6 image
+        run: docker build -f stage53/Dockerfile -t stage54-open5gs .
+
+      - name: Run one NRF with ${{ matrix.count }} genuine NSSF
+        run: |
+          set -euo pipefail
+          OUT="stage54_${{ matrix.count }}"
+          mkdir -p "$OUT"
+          python3 - <<'PY' > "$OUT/runner_meta.json"
+          import hashlib,json,os,pathlib,socket
+          def fh(p):
+              try: return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+              except Exception: return None
+          print(json.dumps({
+            "runner_name":os.getenv("RUNNER_NAME"),
+            "runner_os":os.getenv("RUNNER_OS"),
+            "runner_arch":os.getenv("RUNNER_ARCH"),
+            "hostname":socket.gethostname(),
+            "machine_id_sha256":fh("/etc/machine-id"),
+            "boot_id_sha256":fh("/proc/sys/kernel/random/boot_id"),
+          },sort_keys=True))
+          PY
+
+          docker run --rm --name "stage54-${{ matrix.count }}" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage54:/opt/stage54:ro"             stage54-open5gs             python3 /opt/stage54/stage54_single_nrf.py               --count ${{ matrix.count }}               --worker 0               --hold-seconds 60               --converge-timeout 600               --batch 25               --batch-pause 0.05               --output /out
+
+          cat "$OUT/STAGE54_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
+          (cd "$OUT" && sha256sum result.json ready.json uuid_hashes.txt runner_meta.json STAGE54_RESULT.md > stage54_sha256.txt)
+
+      - name: Host diagnostics
+        if: failure()
+        run: |
+          docker ps -a || true
+          free -h || true
+          ulimit -a || true
+          ps -eLf | wc -l || true
+          dmesg | tail -n 80 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage54-single-nrf-${{ matrix.count }}-evidence
+          path: stage54_${{ matrix.count }}/
+          retention-days: 90
