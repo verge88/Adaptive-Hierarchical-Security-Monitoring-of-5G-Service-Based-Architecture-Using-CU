@@ -1,0 +1,66 @@
+name: Stage55C 4000 discovery with upstream HTTP2 fixes
+
+on:
+  push:
+    branches: [experiment/stage55-nrf-bulk-discovery]
+    paths:
+      - ".github/docker/stage55c-open5gs-backport.Dockerfile"
+      - ".github/workflows/stage55c-4000-discovery-upstream-fix.yml"
+      - "stage55/stage55_discovery_scale.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patched-discovery-4000:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add 8 GiB swap
+        run: |
+          set -euo pipefail
+          mkdir -p stage55c_out
+          free -b > stage55c_out/host_memory_before_swap.txt
+          sudo fallocate -l 8G /mnt/stage55c-extra.swap
+          sudo chmod 600 /mnt/stage55c-extra.swap
+          sudo mkswap /mnt/stage55c-extra.swap
+          sudo swapon /mnt/stage55c-extra.swap
+          cat /proc/swaps > stage55c_out/swaps_after_add.txt
+
+      - name: Build Open5GS 2.7.6 with upstream HTTP2 response fixes
+        run: |
+          docker build             -f .github/docker/stage55c-open5gs-backport.Dockerfile             -t stage55c-open5gs .
+          docker run --rm stage55c-open5gs cat /opt/stage55c_backport.txt             | tee stage55c_out/backport_provenance.txt
+
+      - name: Run 4000 live NSSF and full discovery sweep
+        run: |
+          set -uo pipefail
+          OUT="stage55c_out"
+          NAME="stage55c-4000"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage55/stage55_discovery_scale.py:/opt/stage55.py:ro"             stage55c-open5gs             python3 /opt/stage55.py               --count 4000 --worker 0               --hold-seconds 30               --converge-timeout 1800               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage55c_out"
+          NAME="stage55c-4000"
+          mkdir -p "$OUT"
+          free -b > "$OUT/host_memory_after_run.txt" || true
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          docker logs "$NAME" --tail 1200 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          sudo swapoff /mnt/stage55c-extra.swap || true
+          sudo rm -f /mnt/stage55c-extra.swap || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage55c-4000-discovery-upstream-fix-evidence
+          path: stage55c_out/
+          retention-days: 90
