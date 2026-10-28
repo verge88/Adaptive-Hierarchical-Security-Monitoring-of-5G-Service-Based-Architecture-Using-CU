@@ -18,26 +18,6 @@ from pathlib import Path
 MAX_BODY=16*1024*1024
 PROCESS_NONCE=uuid.uuid4().hex
 
-STAGE51_IDENTITIES={
- "scp1":{"nf_type":"SCP","endpoint":"127.0.0.11","uuid":"68587210-cb17-41f1-b778-cb0504de424b"},
- "nssf1":{"nf_type":"NSSF","endpoint":"127.0.0.12","uuid":"67c30d06-cb17-41f1-a911-3fec80fe9da1"},
- "nssf2":{"nf_type":"NSSF","endpoint":"127.0.0.13","uuid":"6102db04-cb17-41f1-87aa-fda716b72141"},
- "ausf1":{"nf_type":"AUSF","endpoint":"127.0.0.14","uuid":"67d82330-cb17-41f1-a129-2b5b6aecbd20"},
- "ausf2":{"nf_type":"AUSF","endpoint":"127.0.0.15","uuid":"6127a9ca-cb17-41f1-9432-614e8511394a"},
- "bsf1":{"nf_type":"BSF","endpoint":"127.0.0.16","uuid":"67ed3806-cb17-41f1-aeb4-f5de6ab9f093"},
- "bsf2":{"nf_type":"BSF","endpoint":"127.0.0.17","uuid":"614c8632-cb17-41f1-942e-cb89bf0f65b0"},
- "udm1":{"nf_type":"UDM","endpoint":"127.0.0.18","uuid":"6802f13c-cb17-41f1-84e9-e3c72840941e"},
- "udm2":{"nf_type":"UDM","endpoint":"127.0.0.19","uuid":"6171570a-cb17-41f1-8a52-23e697ea8bb7"},
- "amf1":{"nf_type":"AMF","endpoint":"127.0.0.20","uuid":"68188b5a-cb17-41f1-9015-ad0ac3a479aa"},
- "smf1":{"nf_type":"SMF","endpoint":"127.0.0.21","uuid":"683521de-cb17-41f1-be57-313b7449e9f3"},
- "pcf1":{"nf_type":"PCF","endpoint":"127.0.0.22","uuid":"6843dad0-cb17-41f1-843e-6b58e972449c"}
-}
-STAGE51_MAP_SHA256=hashlib.sha256(json.dumps(STAGE51_IDENTITIES,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
-
-def stage51_false_uuid(slot,trial):
-    return str(uuid.uuid5(uuid.NAMESPACE_URL,f"stage51/false/{slot}/{int(trial)}"))
-
-
 def canon(x):
     return json.dumps(x,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
 
@@ -103,32 +83,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path=="/health":
-            self.send_json(200,{"schema":"stage47-render-health-v1","host":host_meta(),
-                                "stage51_identity_map_sha256":STAGE51_MAP_SHA256})
+            self.send_json(200,{"schema":"stage47-render-health-v1","host":host_meta()})
         else:
             self.send_json(404,{"error":"not found"})
 
     def do_POST(self):
-        if self.path=="/identity-probe":
-            try:
-                length=int(self.headers.get("Content-Length","0"))
-                if length<=0 or length>MAX_BODY: raise ValueError("invalid body size")
-                req=json.loads(self.rfile.read(length))
-                if req.get("schema")!="stage51-runtime-probe-request-v1": raise ValueError("schema")
-                slot=str(req["slot"]); trial=int(req["trial"]); challenge=str(req["challenge"])
-                mode=str(req.get("mode","honest"))
-                if slot not in STAGE51_IDENTITIES or mode not in ("honest","lie"): raise ValueError("slot/mode")
-                rec=STAGE51_IDENTITIES[slot]
-                observed_uuid=rec["uuid"] if mode=="honest" else stage51_false_uuid(slot,trial)
-                security={"slot":slot,"trial":trial,"nf_type":rec["nf_type"],"endpoint":rec["endpoint"],
-                          "observed_nf_instance_id":observed_uuid,
-                          "identity_map_sha256":STAGE51_MAP_SHA256}
-                self.send_json(200,{"schema":"stage51-runtime-probe-response-v1",
-                                    "challenge":challenge,"security":security,
-                                    "security_sha256":sha(security),"host":host_meta()})
-            except Exception as e:
-                self.send_json(400,{"schema":"stage51-error-v1","error":type(e).__name__+":"+str(e)})
-            return
         if self.path!="/verify":
             self.send_json(404,{"error":"not found"});return
         try:
