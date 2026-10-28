@@ -47,7 +47,7 @@ jobs:
             "boot_id_sha256":fh("/proc/sys/kernel/random/boot_id"),
           },sort_keys=True))
           PY
-          docker run --rm --name "stage53b-${{ matrix.worker }}" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             stage53-open5gs             python3 /opt/stage53/stage53_scale_worker.py               --count 250 --worker ${{ matrix.worker }}               --hold-seconds 45 --converge-timeout 360               --batch 25 --batch-pause 0.05 --output /out
+          docker run --rm --name "stage53b-${{ matrix.worker }}" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             stage53-open5gs             python3 /opt/stage53/stage53_scale_worker.py               --count 250 --worker ${{ matrix.worker }}               --hold-seconds 300 --converge-timeout 480               --batch 25 --batch-pause 0.05 --output /out
           cat "$OUT/STAGE53_RESULT.md" >> "$GITHUB_STEP_SUMMARY"
           (cd "$OUT" && sha256sum result.json ready.json uuid_hashes.txt runner_meta.json STAGE53_RESULT.md > stage53b_worker_sha256.txt)
 
