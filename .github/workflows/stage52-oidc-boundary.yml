@@ -1,0 +1,38 @@
+name: Stage52 OIDC process-boundary control
+on:
+  push:
+    branches: [experiment/stage52-live-runtime-oidc-attestation]
+    paths: ["stage52/stage52_oidc_boundary.py",".github/workflows/stage52-oidc-boundary.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+jobs:
+  fabricated-process-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      STAGE52_RENDER_URL: https://stage47-render-verifier-fixed.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover verified live Stage52 parameters only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p prior out
+          gh run download 40702723583 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU             -n stage52-live-runtime-oidc-evidence -D prior
+          find prior -type f | sort
+          test -s prior/stage52_out/profile_before.json
+          test -s prior/stage52_out/nssf_executable_sha256.txt
+      - name: Fabricate process evidence with a fresh job-bound OIDC identity
+        run: |
+          set -euo pipefail
+          python3 stage52/stage52_oidc_boundary.py             --profile prior/stage52_out/profile_before.json             --exe-hash-file prior/stage52_out/nssf_executable_sha256.txt             --render "$STAGE52_RENDER_URL" --out out/stage52_oidc_boundary.json             | tee out/stage52_oidc_boundary_summary.txt
+          (cd out && sha256sum stage52_oidc_boundary.json stage52_oidc_boundary_summary.txt > stage52_oidc_boundary_sha256.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage52-oidc-process-boundary-evidence
+          path: out/
+          retention-days: 90
