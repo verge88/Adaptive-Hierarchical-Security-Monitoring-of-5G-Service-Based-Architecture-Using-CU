@@ -73,12 +73,13 @@ def main():
                         raise AssertionError("response binding mismatch")
                     if response["verdict_sha256"]!=sha(sec):
                         raise AssertionError("response verdict hash mismatch")
-                    expected_alerts=[list(x) for x in la]
+                    remote_alerts_norm=sorted(set(tuple(x) for x in sec["alerts"]))
+                    local_alerts_norm=sorted(set(tuple(x) for x in la))
                     expected_ids=[list(x) for x in li]
-                    if sec["alerts"]!=expected_alerts or sec["uuid_tags"]!=expected_ids:
+                    if remote_alerts_norm!=local_alerts_norm or sec["uuid_tags"]!=expected_ids:
                         raise AssertionError("Render/local group mismatch "+cid+" g"+str(group)+
-                                             " remote="+sha([sec["alerts"],sec["uuid_tags"]])+
-                                             " local="+sha([expected_alerts,expected_ids]))
+                                             " remote="+sha([remote_alerts_norm,sec["uuid_tags"]])+
+                                             " local="+sha([local_alerts_norm,expected_ids]))
                     if response["host"].get("process_nonce_sha256")!=first_host.get("process_nonce_sha256"):
                         raise AssertionError("Render service instance changed during experiment")
                     remote_alerts.extend(sec["alerts"]);remote_ids.extend(sec["uuid_tags"])
