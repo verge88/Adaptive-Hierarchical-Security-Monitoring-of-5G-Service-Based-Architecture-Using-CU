@@ -22,16 +22,12 @@ REPLICAS=3
 SIZES=(13,1040,4160)
 TRIALS=4
 
-def key(group,replica):
-    # Test-only independent verifier keys. A Byzantine replica is assumed to possess its own valid key.
-    return hashlib.sha256(f"stage46/verifier/{group}/{replica}".encode()).digest()
+def sign(body,key_bytes):
+    return hmac.new(key_bytes,canon(body),hashlib.sha256).hexdigest()
 
-def sign(body,group,replica):
-    return hmac.new(key(group,replica),canon(body),hashlib.sha256).hexdigest()
-
-def verify(env,group,replica):
+def verify(env,group,replica,key_bytes):
     body=env["body"]
-    if not hmac.compare_digest(sign(body,group,replica),env["mac_sha256"]):
+    if not hmac.compare_digest(sign(body,key_bytes),env["mac_sha256"]):
         raise AssertionError("invalid verifier signature")
     if body["group"]!=group or body["replica"]!=replica:
         raise AssertionError("verifier identity mismatch")
@@ -55,6 +51,8 @@ def machine_meta():
 
 def worker(seed_path,group,replica,out):
     seed=json.loads(Path(seed_path).read_text())
+    # Per-job random verifier key: a compromised replica knows only its own key.
+    local_key=os.urandom(32)
     rows_out=[]
     injected=0
     for n in SIZES:
@@ -79,9 +77,10 @@ def worker(seed_path,group,replica,out):
                     injected+=1
                 else:
                     body["byzantine_injected"]=False
-                rows_out.append({"body":body,"mac_sha256":sign(body,group,replica)})
-    report={"schema":"stage46-verifier-v1","group":group,"replica":replica,
-            "runner":machine_meta(),"signed_summaries":rows_out,
+                rows_out.append({"body":body,"mac_sha256":sign(body,local_key)})
+    report={"schema":"stage46-verifier-v2","group":group,"replica":replica,
+            "runner":machine_meta(),"verification_key_hex":local_key.hex(),
+            "signed_summaries":rows_out,
             "byzantine_summaries_emitted":injected}
     Path(out).write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n")
     print(json.dumps({"group":group,"replica":replica,"cases":len(rows_out),
@@ -125,8 +124,10 @@ def coordinator(seed_path,input_dir,out):
     total_signed=0
     total_injected=0
     for (g,r),rep in by_gr.items():
+        verifier_key=bytes.fromhex(rep["verification_key_hex"])
+        if len(verifier_key)!=32: raise AssertionError("invalid verifier key length")
         for env in rep["signed_summaries"]:
-            body=verify(env,g,r)
+            body=verify(env,g,r,verifier_key)
             indexed[(body["case_id"],g)][r]=body
             total_signed+=1
             total_injected+=int(body.get("byzantine_injected") is True)
@@ -165,7 +166,7 @@ def coordinator(seed_path,input_dir,out):
     sample=indexed[("n1040-t0-a1",0)]
     env0=by_gr[(0,0)]["signed_summaries"][8] if len(by_gr[(0,0)]["signed_summaries"])>8 else by_gr[(0,0)]["signed_summaries"][0]
     tampered=json.loads(json.dumps(env0));tampered["body"]["count"]+=1
-    try: verify(tampered,0,0); controls["tampered_signature"]=False
+    try: verify(tampered,0,0,bytes.fromhex(by_gr[(0,0)]["verification_key_hex"])); controls["tampered_signature"]=False
     except AssertionError: controls["tampered_signature"]=True
     try: choose_quorum([sample[0]]); controls["two_missing_replicas_fail_closed"]=False
     except AssertionError: controls["two_missing_replicas_fail_closed"]=True
@@ -187,8 +188,9 @@ def coordinator(seed_path,input_dir,out):
     runners=[r["runner"] for r in reports]
     hostnames=[x.get("hostname") for x in runners if x.get("hostname")]
     machine_ids=[x.get("machine_id_sha256") for x in runners if x.get("machine_id_sha256")]
+    runner_names=[x.get("runner_name") for x in runners if x.get("runner_name")]
     report={
-        "schema":"stage46-multirunner-byzantine-quorum-v1",
+        "schema":"stage46-multirunner-byzantine-quorum-v2",
         "source_seed":"Stage44 seed derived from Stage42 live Open5GS evidence",
         "architecture":"4 logical groups x 3 independent GitHub-hosted verifier jobs; 2-of-3 per-group quorum",
         "cases":len(case_results),"group_case_votes":len(case_results)*NODES,
@@ -197,13 +199,15 @@ def coordinator(seed_path,input_dir,out):
         "all_quorum_results_equal_centralized":all(x["equivalent"] for x in case_results),
         "benign_false_alert_cases":sum(bool(x["alerts"]) for x in case_results if not x["attack"]),
         "attacked_detected_cases":sum(bool(x["alerts"]) for x in case_results if x["attack"]),
-        "runner_observation":{"reports":len(runners),"unique_hostnames":len(set(hostnames)),
+        "runner_observation":{"reports":len(runners),"unique_runner_names":len(set(runner_names)),
+                              "unique_hostnames":len(set(hostnames)),
                               "unique_machine_id_hashes":len(set(machine_ids)),
-                              "hostnames":hostnames},
+                              "runner_names":runner_names,"hostnames":hostnames},
         "controls":controls,
         "limitations":[
             "GitHub-hosted jobs are separate runner VMs/jobs, but GitHub does not expose or guarantee distinct physical hosts.",
-            "This is a fault-injection experiment: compromise is emulated by a key-holding replica producing a validly signed false summary.",
+            "This is a fault-injection experiment: compromise is emulated by a replica producing a false summary authenticated with its own per-job random key.",
+            "Verifier keys are isolated by separate jobs but published with their artifacts for reproducibility; GitHub artifact/job integrity, not PKI or TEE attestation, binds each vote to its job.",
             "Tolerance is f=1 per group. Two colluding replicas can create a false 2-of-3 majority.",
             "The immutable seed is Open5GS-derived, while scaled records above the original 13 logical slots are deterministic replicas.",
             "No hardware/TEE attestation of verifier execution is claimed."
