@@ -1,0 +1,39 @@
+name: Stage50 network faults and replay fail-closed controls
+on:
+  push:
+    branches: [experiment/stage50-network-faults-replay]
+    paths: ["stage50/**",".github/workflows/stage50-network-faults-replay.yml"]
+  pull_request:
+    paths: ["stage50/**",".github/workflows/stage50-network-faults-replay.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  network-faults:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      STAGE50_URL: https://stage47-render-verifier-fixed.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover immutable Open5GS-derived Stage44 seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src data out
+          gh run download 39148421353 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU -n stage42-eighty-live-restarts-evidence -D src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed --artifact-dir src --seed data/stage44_seed.json
+      - name: Run live HTTPS fault and replay experiment against pinned Render host
+        run: |
+          set -euo pipefail
+          python3 stage50/stage50_network_faults.py --seed data/stage44_seed.json --url "$STAGE50_URL" --out out/stage50_report.json | tee out/stage50_summary.txt
+          python3 -m json.tool out/stage50_report.json >/dev/null
+          (cd out && sha256sum stage50_report.json stage50_summary.txt > stage50_sha256.txt)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage50-network-fault-replay-evidence
+          path: out/
+          retention-days: 90
