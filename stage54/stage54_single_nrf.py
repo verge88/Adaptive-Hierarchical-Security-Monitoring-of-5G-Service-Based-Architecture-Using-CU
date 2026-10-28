@@ -338,7 +338,8 @@ async def main_async(args):
         threads=[after[p]["threads"] for p in common]
         result={
           "schema":"stage54-single-nrf-live-open5gs-scale-v1","open5gs_ref":"v2.7.6",
-          "worker":args.worker,"requested_nf":args.count,"nrf_scp_peer_limit":peer_limit,\n          "single_nrf_process": True, "nrf_pid": nrf.pid, "nrf_alive_at_measurement": nrf.poll() is None,
+          "worker":args.worker,"requested_nf":args.count,"nrf_scp_peer_limit":peer_limit,
+          "single_nrf_process": True, "nrf_pid": nrf.pid, "nrf_alive_at_measurement": nrf.poll() is None,
           "live_processes":sum(p.poll() is None for p in workers),
           "unique_pids":len(set(pids)),"witness_records":len(witness_ids),
           "unique_witness_uuids":len(set(witness_ids)),
@@ -376,17 +377,18 @@ async def main_async(args):
           "all_nfm_uuids_unique":result["unique_nfm_profile_uuids"]==args.count,
           "witness_matches_nrf":result["witness_nfm_uuid_sets_equal"],
           "all_sbi_reachable":result["direct_sbi_reachable"]==args.count,
+          "single_nrf_alive":result["single_nrf_process"] and result["nrf_alive_at_measurement"],
         }
         result["checks"]=checks;result["all_checks_passed"]=all(checks.values())
         (out/"uuid_hashes.txt").write_text(
             "\n".join(sorted(hashlib.sha256(x.encode()).hexdigest() for x in witness_ids))+"\n"
         )
         (out/"result.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
-        (out/"STAGE53_RESULT.md").write_text(
-          "# Stage53 live Open5GS scale worker\n"+
+        (out/"STAGE54_RESULT.md").write_text(
+          "# Stage54 single-NRF live Open5GS scale\n"+
           "\n".join(f"- {k}: {v}" for k,v in result.items() if k not in {"host_meminfo_kib","checks"})+
           "\n- checks: "+json.dumps(checks,sort_keys=True)+"\n")
-        if not result["all_checks_passed"]: raise RuntimeError("Stage53 integrity checks failed")
+        if not result["all_checks_passed"]: raise RuntimeError("Stage54 integrity checks failed")
         print(json.dumps(result,indent=2,sort_keys=True))
     finally:
         terminate(workers+([scp] if scp is not None else [])+[nrf])
