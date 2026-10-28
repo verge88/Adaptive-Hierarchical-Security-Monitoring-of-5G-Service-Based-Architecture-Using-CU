@@ -1,0 +1,100 @@
+name: Stage46 multi-runner Byzantine quorum
+on:
+  push:
+    branches:
+      - experiment/stage46-multirunner-byzantine-quorum
+    paths:
+      - "stage46/**"
+      - ".github/workflows/stage46-multirunner-byzantine.yml"
+  pull_request:
+    paths:
+      - "stage46/**"
+      - ".github/workflows/stage46-multirunner-byzantine.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  seed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover immutable Open5GS-derived Stage44 seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src out
+          gh run download 39148421353 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU -n stage42-eighty-live-restarts-evidence -D src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed --artifact-dir src --seed out/stage44_seed.json
+          sha256sum out/stage44_seed.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage46-seed
+          path: out/stage44_seed.json
+          retention-days: 30
+
+  verifier:
+    needs: seed
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [0,1,2,3]
+        replica: [0,1,2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage46-seed
+          path: seed
+      - name: Independent group verifier with signed Byzantine fault injection
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python3 stage46/stage46_multirunner_byzantine.py worker \
+            --seed seed/stage44_seed.json --group ${{ matrix.group }} --replica ${{ matrix.replica }} \
+            --out out/stage46-g${{ matrix.group }}-r${{ matrix.replica }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage46-g${{ matrix.group }}-r${{ matrix.replica }}
+          path: out/stage46-g${{ matrix.group }}-r${{ matrix.replica }}.json
+          retention-days: 90
+
+  coordinator:
+    needs: [seed, verifier]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage46-seed
+          path: seed
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage46-g*-r*
+          path: verifier_reports
+          merge-multiple: true
+      - name: Verify signatures, form 2-of-3 quorums, compare with centralized recomputation
+        run: |
+          set -euo pipefail
+          python3 stage46/stage46_multirunner_byzantine.py coordinator \
+            --seed seed/stage44_seed.json --input-dir verifier_reports --out stage46_report.json | tee stage46_summary.txt
+          python3 -m json.tool stage46_report.json >/dev/null
+          {
+            echo "### Stage46: multi-runner Byzantine quorum"
+            echo
+            echo 'Separate GitHub-hosted verifier jobs: 4 groups x 3 replicas; one validly signed Byzantine replica per case.'
+            echo
+            echo 'Full report is archived as an artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage46-byzantine-quorum-evidence
+          path: |
+            stage46_report.json
+            stage46_summary.txt
+          retention-days: 90
