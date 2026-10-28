@@ -167,6 +167,10 @@ def pct(values,p):
     if not values:return None
     a=sorted(values);return a[max(0,min(len(a)-1,math.ceil(p*len(a))-1))]
 
+def tail(path,n=12000):
+    try:return Path(path).read_text(errors="replace")[-n:]
+    except Exception:return ""
+
 def terminate(procs):
     for p in procs:
         if p.poll() is None:
@@ -187,26 +191,42 @@ async def main_async(args):
     (ROOT/"nrf.yaml").write_text(nrf_config(peer_limit))
     (ROOT/"scp.yaml").write_text(scp_config(peer_limit))
     env={**os.environ,"STAGE38_WITNESS_DIR":str(WITNESS)}
-    nrf=subprocess.Popen([NRF_BIN,"-c",str(ROOT/"nrf.yaml")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
+    nrf_log_path=out/"nrf.log";scp_log_path=out/"scp.log";nssf_log_path=out/"nssf.log"
+    nrf_log=open(nrf_log_path,"ab",buffering=0);scp_log=open(scp_log_path,"ab",buffering=0);nssf_log=open(nssf_log_path,"ab",buffering=0)
+    nrf=subprocess.Popen([NRF_BIN,"-c",str(ROOT/"nrf.yaml")],stdout=nrf_log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
     workers=[];scp=None
     t0=time.time()
     try:
         wait_tcp(NRF_HOST,PORT,30)
         time.sleep(.5)
-        scp=subprocess.Popen([SCP_BIN,"-c",str(ROOT/"scp.yaml")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
+        scp=subprocess.Popen([SCP_BIN,"-c",str(ROOT/"scp.yaml")],stdout=scp_log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
         wait_tcp("127.0.0.11",80,30)
         time.sleep(.5)
         endpoints=[]
         for i in range(1,args.count+1):
             host,port=endpoint_for(args.worker,i);endpoints.append((host,port))
             cfg=ROOT/f"nssf-{i:04d}.yaml";cfg.write_text(nssf_config(host,port))
-            p=subprocess.Popen([NSSF_BIN,"-c",str(cfg)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
+            p=subprocess.Popen([NSSF_BIN,"-c",str(cfg)],stdout=nssf_log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
             workers.append(p)
             if i%args.batch==0: time.sleep(args.batch_pause)
         launch_done=time.time()
         last_count=0;discovery_bytes=0;rows=[];last_error=None
         deadline=time.time()+args.converge_timeout
         while time.time()<deadline:
+            if nrf.poll() is not None:
+                diag={"schema":"stage53-control-process-exit-v1","component":"nrf","returncode":nrf.returncode,
+                  "worker":args.worker,"requested":args.count,"witness_files":len(read_witness()),
+                  "nrf_log_tail":tail(nrf_log_path)}
+                (out/"failure_diagnostic.json").write_text(json.dumps(diag,indent=2)+"\n")
+                print(json.dumps(diag,indent=2),flush=True)
+                raise RuntimeError(f"NRF exited rc={nrf.returncode}")
+            if scp is not None and scp.poll() is not None:
+                diag={"schema":"stage53-control-process-exit-v1","component":"scp","returncode":scp.returncode,
+                  "worker":args.worker,"requested":args.count,"witness_files":len(read_witness()),
+                  "scp_log_tail":tail(scp_log_path)}
+                (out/"failure_diagnostic.json").write_text(json.dumps(diag,indent=2)+"\n")
+                print(json.dumps(diag,indent=2),flush=True)
+                raise RuntimeError(f"SCP exited rc={scp.returncode}")
             dead=sum(p.poll() is not None for p in workers)
             if dead: raise RuntimeError(f"{dead} NSSF processes exited before convergence")
             try:
@@ -220,7 +240,9 @@ async def main_async(args):
             diag={"schema":"stage53-timeout-v1","worker":args.worker,"requested":args.count,
               "discovery_count":last_count,"witness_files":len(read_witness()),
               "live_processes":sum(p.poll() is None for p in workers),
-              "last_discovery_error":last_error}
+              "last_discovery_error":last_error,"nrf_returncode":nrf.poll(),
+              "scp_returncode":scp.poll() if scp is not None else None,
+              "nrf_log_tail":tail(nrf_log_path),"scp_log_tail":tail(scp_log_path)}
             (out/"failure_diagnostic.json").write_text(json.dumps(diag,indent=2)+"\n")
             print(json.dumps(diag,indent=2),flush=True)
             raise RuntimeError(f"convergence timeout discovery={last_count} witness={len(read_witness())} error={last_error}")
@@ -295,6 +317,9 @@ async def main_async(args):
         print(json.dumps(result,indent=2,sort_keys=True))
     finally:
         terminate(workers+([scp] if scp is not None else [])+[nrf])
+        for fh in (nssf_log,scp_log,nrf_log):
+            try:fh.close()
+            except Exception:pass
 
 def main():
     ap=argparse.ArgumentParser()
