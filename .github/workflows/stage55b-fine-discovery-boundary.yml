@@ -1,0 +1,50 @@
+name: Stage55B fine discovery boundary 26-50
+
+on:
+  push:
+    branches: [experiment/stage55-nrf-bulk-discovery]
+    paths:
+      - "stage55/stage55b_fine_boundary.py"
+      - ".github/workflows/stage55b-fine-discovery-boundary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fine-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Open5GS 2.7.6 image
+        run: docker build -f stage53/Dockerfile -t stage55b-open5gs .
+
+      - name: Run 100 live NSSF and probe limits 26 through 50
+        run: |
+          set -uo pipefail
+          OUT="stage55b_out"
+          NAME="stage55b-boundary"
+          mkdir -p "$OUT"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage55/stage55b_fine_boundary.py:/opt/stage55b.py:ro"             stage55b-open5gs             python3 /opt/stage55b.py               --count 100 --worker 0               --hold-seconds 5               --converge-timeout 300               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage55b_out"
+          NAME="stage55b-boundary"
+          mkdir -p "$OUT"
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          docker logs "$NAME" --tail 800 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage55b-fine-discovery-boundary-evidence
+          path: stage55b_out/
+          retention-days: 90
