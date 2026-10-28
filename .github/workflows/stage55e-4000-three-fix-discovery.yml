@@ -1,0 +1,68 @@
+name: Stage55E 4000 discovery with three upstream HTTP2 fixes
+
+on:
+  push:
+    branches: [experiment/stage55-nrf-bulk-discovery]
+    paths:
+      - "stage55/stage55e_4000_three_fix.py"
+      - ".github/workflows/stage55e-4000-three-fix-discovery.yml"
+      - ".github/docker/stage55d-open5gs-three-fix.Dockerfile"
+      - ".github/docker/patch_stage55c_v276_h2_response.py"
+      - ".github/docker/patch_stage55d_v276_defer_send.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  three-fix-4000:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add 8 GiB swap
+        run: |
+          set -euo pipefail
+          mkdir -p stage55e_out
+          free -b > stage55e_out/host_memory_before_swap.txt
+          sudo fallocate -l 8G /mnt/stage55e-extra.swap
+          sudo chmod 600 /mnt/stage55e-extra.swap
+          sudo mkswap /mnt/stage55e-extra.swap
+          sudo swapon /mnt/stage55e-extra.swap
+          cat /proc/swaps > stage55e_out/swaps_after_add.txt
+
+      - name: Build Open5GS 2.7.6 with three upstream HTTP2 fixes
+        run: |
+          docker build             -f .github/docker/stage55d-open5gs-three-fix.Dockerfile             -t stage55e-open5gs .
+          docker run --rm stage55e-open5gs cat /opt/stage55d_backport.txt             | tee stage55e_out/backport_provenance.txt
+
+      - name: Run 4000 live NSSF and verify full SearchResult
+        run: |
+          set -uo pipefail
+          OUT="stage55e_out"
+          NAME="stage55e-4000"
+          docker run --name "$NAME" --network host             --pids-limit=-1             -v "$PWD/$OUT:/out"             -v "$PWD/stage55/stage55e_4000_three_fix.py:/opt/stage55e.py:ro"             stage55e-open5gs             python3 /opt/stage55e.py               --count 4000 --worker 0               --hold-seconds 30               --converge-timeout 1800               --batch 25 --batch-pause 0.05               --output /out
+          RC=$?
+          echo "$RC" > "$OUT/docker_exit_code.txt"
+          exit "$RC"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          OUT="stage55e_out"
+          NAME="stage55e-4000"
+          mkdir -p "$OUT"
+          free -b > "$OUT/host_memory_after_run.txt" || true
+          docker inspect "$NAME" --format '{{json .State}}' > "$OUT/container_state.json" 2>&1 || true
+          docker logs "$NAME" --tail 1600 > "$OUT/container_log_tail.txt" 2>&1 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          sudo swapoff /mnt/stage55e-extra.swap || true
+          sudo rm -f /mnt/stage55e-extra.swap || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage55e-4000-three-fix-discovery-evidence
+          path: stage55e_out/
+          retention-days: 90
