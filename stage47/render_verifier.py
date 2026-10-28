@@ -19,7 +19,6 @@ MAX_BODY=16*1024*1024
 PROCESS_NONCE=uuid.uuid4().hex
 
 STAGE51_IDENTITIES={
- "nrf1":{"nf_type":"NRF","endpoint":"127.0.0.10","uuid":"60d1a46c-cb17-41f1-97b0-23e2e8d8f27e"},
  "scp1":{"nf_type":"SCP","endpoint":"127.0.0.11","uuid":"68587210-cb17-41f1-b778-cb0504de424b"},
  "nssf1":{"nf_type":"NSSF","endpoint":"127.0.0.12","uuid":"67c30d06-cb17-41f1-a911-3fec80fe9da1"},
  "nssf2":{"nf_type":"NSSF","endpoint":"127.0.0.13","uuid":"6102db04-cb17-41f1-87aa-fda716b72141"},
