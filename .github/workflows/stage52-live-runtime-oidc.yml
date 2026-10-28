@@ -1,0 +1,178 @@
+name: Stage52 live Open5GS runtime OIDC attestation
+
+on:
+  push:
+    branches: [experiment/stage52-live-runtime-oidc-attestation]
+    paths: ["stage52/**",".github/workflows/stage52-live-runtime-oidc.yml"]
+  pull_request:
+    paths: ["stage52/**",".github/workflows/stage52-live-runtime-oidc.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  live-runtime-attestation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      STAGE52_RENDER_URL: https://stage47-render-verifier-fixed.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Open5GS 2.7.6 instrumented image
+        run: docker build -f stage39/live_open5gs/Dockerfile -t stage52-live-open5gs .
+
+      - name: Start live NRF, SCP and NSSF processes
+        run: |
+          set -euo pipefail
+          mkdir -p stage52_out stage52_control stage52_witness
+          docker run -d --name stage52-core --network host             -v "$PWD/stage52_witness:/run/stage39/witness"             -v "$PWD/stage52:/opt/stage52:ro"             stage52-live-open5gs tail -f /dev/null
+          docker exec -d -e STAGE38_WITNESS_DIR=/run/stage39/witness stage52-core             /src/open5gs/build/src/nrf/open5gs-nrfd -c /opt/stage39/nrf.yaml
+          python3 - <<'PY'
+          import socket,time
+          for host in ("127.0.0.10",):
+              for _ in range(150):
+                  try:
+                      with socket.create_connection((host,80),.2): break
+                  except OSError: time.sleep(.1)
+              else: raise SystemExit("NRF not ready")
+          PY
+          docker exec -d -e STAGE38_WITNESS_DIR=/run/stage39/witness stage52-core             /src/open5gs/build/src/scp/open5gs-scpd -c /opt/stage39/scp.yaml
+          docker exec -d -e STAGE38_WITNESS_DIR=/run/stage39/witness stage52-core             /src/open5gs/build/src/nssf/open5gs-nssfd -c /opt/stage39/nssf1.yaml
+          python3 - <<'PY'
+          import socket,time
+          for host in ("127.0.0.11","127.0.0.12"):
+              for _ in range(200):
+                  try:
+                      with socket.create_connection((host,80),.2): break
+                  except OSError: time.sleep(.1)
+              else: raise SystemExit(host+" not ready")
+          PY
+          docker exec stage52-core python3 /opt/stage52/stage52_query_nssf.py > stage52_out/profile_before.json
+          cat stage52_out/profile_before.json
+
+      - name: Start process-namespace runtime agent
+        run: |
+          set -euo pipefail
+          docker run -d --name stage52-agent             --pid=container:stage52-core --network host             -v "$PWD/stage52_control:/control"             -v "$PWD/stage52_witness:/run/stage39/witness:ro"             -v "$PWD/stage52:/opt/stage52:ro"             stage52-live-open5gs python3 /opt/stage52/stage52_runtime_agent.py
+          for i in $(seq 1 100); do
+            test -s stage52_control/agent_public.pem &&               curl -fsS http://127.0.0.1:19052/health && break
+            sleep .2
+          done
+          test -s stage52_control/agent_public.pem
+          docker exec stage52-core sha256sum /src/open5gs/build/src/nssf/open5gs-nssfd | awk '{print $1}' > stage52_out/nssf_executable_sha256.txt
+          sha256sum stage52_control/agent_public.pem | awk '{print $1}' > stage52_out/agent_public_sha256.txt
+
+      - name: Obtain GitHub OIDC identity bound to runtime-agent public key
+        run: |
+          set -euo pipefail
+          PUBSHA="$(cat stage52_out/agent_public_sha256.txt)"
+          AUD="stage52-runtime:$PUBSHA"
+          ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe=""))' "$AUD")"
+          curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$ENC" > stage52_control/oidc_response.json
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.load(open("stage52_control/oidc_response.json"))
+          t=x["value"]
+          pathlib.Path("stage52_control/oidc_token.txt").write_text(t)
+          print("OIDC token SHA256 recorded only; token is not archived")
+          import hashlib
+          print(hashlib.sha256(t.encode()).hexdigest())
+          PY
+          chmod 600 stage52_control/oidc_token.txt
+          rm -f stage52_control/oidc_response.json
+
+      - name: Wait for external Render Stage52 verifier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,time,urllib.request
+          u="https://stage47-render-verifier-fixed.onrender.com/health"
+          for _ in range(60):
+              try:
+                  with urllib.request.urlopen(u,timeout=20) as r:x=json.loads(r.read())
+                  print(json.dumps(x,indent=2))
+                  if x.get("stage52_verifier") is True: break
+              except Exception: pass
+              time.sleep(2)
+          else: raise SystemExit("Stage52 Render verifier unavailable")
+          PY
+
+      - name: Verify live process and negative controls
+        run: |
+          set -euo pipefail
+          EXE="$(cat stage52_out/nssf_executable_sha256.txt)"
+          python3 stage52/stage52_client.py             --agent http://127.0.0.1:19052 --render "$STAGE52_RENDER_URL"             --token-file stage52_control/oidc_token.txt --pub stage52_control/agent_public.pem             --profile stage52_out/profile_before.json --exe-hash "$EXE"             --mode matrix --out stage52_out/honest_matrix.json
+
+      - name: Stop live NSSF and require fail-closed attestation
+        run: |
+          set -euo pipefail
+          docker exec stage52-core pkill -TERM -f 'open5gs-nssfd.*nssf1.yaml' || true
+          sleep 1
+          EXE="$(cat stage52_out/nssf_executable_sha256.txt)"
+          python3 stage52/stage52_client.py             --agent http://127.0.0.1:19052 --render "$STAGE52_RENDER_URL"             --token-file stage52_control/oidc_token.txt --pub stage52_control/agent_public.pem             --profile stage52_out/profile_before.json --exe-hash "$EXE"             --mode dead --out stage52_out/dead_process.json
+
+      - name: Restart genuine NSSF and verify new live runtime identity
+        run: |
+          set -euo pipefail
+          rm -f stage52_witness/*.tsv
+          docker exec -d -e STAGE38_WITNESS_DIR=/run/stage39/witness stage52-core             /src/open5gs/build/src/nssf/open5gs-nssfd -c /opt/stage39/nssf1.yaml
+          python3 - <<'PY'
+          import socket,time
+          for _ in range(200):
+              try:
+                  with socket.create_connection(("127.0.0.12",80),.2): break
+              except OSError: time.sleep(.1)
+          else: raise SystemExit("restarted NSSF not ready")
+          PY
+          docker exec stage52-core python3 /opt/stage52/stage52_query_nssf.py > stage52_out/profile_after.json
+          EXE="$(cat stage52_out/nssf_executable_sha256.txt)"
+          python3 stage52/stage52_client.py             --agent http://127.0.0.1:19052 --render "$STAGE52_RENDER_URL"             --token-file stage52_control/oidc_token.txt --pub stage52_control/agent_public.pem             --profile stage52_out/profile_after.json --exe-hash "$EXE"             --mode restart --out stage52_out/restart.json
+
+      - name: Summarize and hash evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee stage52_out/STAGE52_RESULT.md
+          import json,hashlib
+          a=json.load(open("stage52_out/honest_matrix.json"))
+          d=json.load(open("stage52_out/dead_process.json"))
+          r=json.load(open("stage52_out/restart.json"))
+          p0=json.load(open("stage52_out/profile_before.json"))
+          p1=json.load(open("stage52_out/profile_after.json"))
+          print("# Stage52 result")
+          print(f"- honest live attestation accepted: {a['primary']['accepted']}")
+          print(f"- replay rejected: {not a['replay']['accepted']} ({a['replay']['reasons']})")
+          print(f"- signed-evidence tamper rejected: {not a['tamper']['accepted']} ({a['tamper']['reasons']})")
+          print(f"- stopped NSSF rejected: {not d['primary']['accepted']} ({d['primary']['reasons']})")
+          print(f"- restarted NSSF accepted: {r['primary']['accepted']}")
+          print(f"- runtime UUID changed across real restart: {p0['nfInstanceId'] != p1['nfInstanceId']}")
+          print(f"- initial UUID hash: {hashlib.sha256(p0['nfInstanceId'].encode()).hexdigest()}")
+          print(f"- restarted UUID hash: {hashlib.sha256(p1['nfInstanceId'].encode()).hexdigest()}")
+          print(f"- OIDC repository/ref/SHA validated externally: {a['primary']['oidc_claims']['repository']} / {a['primary']['oidc_claims']['ref']} / {a['primary']['oidc_claims']['sha']}")
+          PY
+          rm -f stage52_control/oidc_token.txt
+          (cd stage52_out && sha256sum *.json *.txt STAGE52_RESULT.md > stage52_sha256.txt)
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker logs stage52-agent || true
+          docker logs stage52-core || true
+          docker exec stage52-core sh -c 'ps aux; cat /var/log/open5gs/* 2>/dev/null | tail -500' || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f stage52_control/oidc_token.txt stage52_control/oidc_response.json
+          docker rm -f stage52-agent stage52-core >/dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage52-live-runtime-oidc-evidence
+          path: |
+            stage52_out/
+            stage52_control/agent_public.pem
+          retention-days: 90
