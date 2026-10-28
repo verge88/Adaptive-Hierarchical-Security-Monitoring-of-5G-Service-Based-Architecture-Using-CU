@@ -18,21 +18,19 @@ def tcp_ready(host,port=80,timeout=.15):
         with socket.create_connection((host,port),timeout=timeout): return True
     except OSError: return False
 
-def wait_tcp(host,seconds=30):
+def wait_tcp(host,port=80,seconds=30):
     d=time.time()+seconds
     while time.time()<d:
-        if tcp_ready(host): return
+        if tcp_ready(host,port): return
         time.sleep(.05)
-    raise RuntimeError("TCP not ready "+host)
+    raise RuntimeError(f"TCP not ready {host}:{port}")
 
 def endpoint_for(worker,index):
-    # Two /24s per worker are sufficient for 500 NF; textual addresses remain
-    # globally distinct across worker IDs in the same experiment.
-    z=index-1
-    third=worker*2+(z//254)
-    fourth=(z%254)+1
-    if third>254: raise ValueError("worker/index exceeds loopback allocation")
-    return f"127.53.{third}.{fourth}"
+    # Use the exact loopback address proven in Stage42/52 and make each live
+    # NF endpoint unique by port. Worker ranges do not overlap.
+    port=10000+worker*1000+(index-1)
+    if port>65535: raise ValueError("worker/index exceeds port allocation")
+    return "127.0.0.12",port
 
 def nrf_config():
     return """logger:
@@ -49,7 +47,7 @@ nrf:
         port: 80
 """
 
-def nssf_config(address):
+def nssf_config(address,port):
     return f"""logger:
   level: error
 global:
@@ -57,7 +55,7 @@ nssf:
   sbi:
     server:
       - address: {address}
-        port: 80
+        port: {port}
     client:
       nrf:
         - uri: http://127.0.0.10:80
@@ -172,34 +170,42 @@ async def main_async(args):
     workers=[]
     t0=time.time()
     try:
-        wait_tcp(NRF_HOST,30)
+        wait_tcp(NRF_HOST,PORT,30)
+        time.sleep(1.0)
         endpoints=[]
         for i in range(1,args.count+1):
-            ep=endpoint_for(args.worker,i);endpoints.append(ep)
-            cfg=ROOT/f"nssf-{i:04d}.yaml";cfg.write_text(nssf_config(ep))
+            host,port=endpoint_for(args.worker,i);endpoints.append((host,port))
+            cfg=ROOT/f"nssf-{i:04d}.yaml";cfg.write_text(nssf_config(host,port))
             p=subprocess.Popen([NSSF_BIN,"-c",str(cfg)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,env=env)
             workers.append(p)
             if i%args.batch==0: time.sleep(args.batch_pause)
         launch_done=time.time()
-        last_count=0;discovery_bytes=0;rows=[]
+        last_count=0;discovery_bytes=0;rows=[];last_error=None
         deadline=time.time()+args.converge_timeout
         while time.time()<deadline:
             dead=sum(p.poll() is not None for p in workers)
             if dead: raise RuntimeError(f"{dead} NSSF processes exited before convergence")
             try:
-                rows,discovery_bytes=await discover_nssf();last_count=len(rows)
+                rows,discovery_bytes=await discover_nssf();last_count=len(rows);last_error=None
                 wit=read_witness()
-                if len(rows)==args.count and len(wit)>=args.count: break
-            except Exception: pass
+                if len(rows)==args.count and all(p.pid in wit for p in workers): break
+            except Exception as exc:
+                last_error=f"{type(exc).__name__}: {exc}"
             await asyncio.sleep(.25)
         else:
-            raise RuntimeError(f"convergence timeout discovery={last_count} witness={len(read_witness())}")
+            diag={"schema":"stage53-timeout-v1","worker":args.worker,"requested":args.count,
+              "discovery_count":last_count,"witness_files":len(read_witness()),
+              "live_processes":sum(p.poll() is None for p in workers),
+              "last_discovery_error":last_error}
+            (out/"failure_diagnostic.json").write_text(json.dumps(diag,indent=2)+"\n")
+            print(json.dumps(diag,indent=2),flush=True)
+            raise RuntimeError(f"convergence timeout discovery={last_count} witness={len(read_witness())} error={last_error}")
         ready=time.time()
         pids=[p.pid for p in workers]
         wit=read_witness()
         discovered_ids=[str(r.get("nfInstanceId","")).lower() for r in rows]
         witness_ids=[wit[p]["nf_instance_id"] for p in pids if p in wit]
-        reachable=sum(tcp_ready(ep,.12) for ep in endpoints)
+        reachable=sum(tcp_ready(h,p,.12) for h,p in endpoints)
         before={pid:proc_status(pid) for pid in pids}
         before={k:v for k,v in before.items() if v}
         mem_before=cgroup_memory_current()
@@ -243,7 +249,7 @@ async def main_async(args):
           "cgroup_memory_current_after_hold":mem_after,
           "host_meminfo_kib":host_mem(),
           "binary_sha256":hashlib.sha256(Path(NSSF_BIN).read_bytes()).hexdigest(),
-          "endpoint_first":endpoints[0],"endpoint_last":endpoints[-1],
+          "endpoint_first":f"{endpoints[0][0]}:{endpoints[0][1]}","endpoint_last":f"{endpoints[-1][0]}:{endpoints[-1][1]}",
         }
         checks={
           "all_processes_live":result["live_processes"]==args.count,
