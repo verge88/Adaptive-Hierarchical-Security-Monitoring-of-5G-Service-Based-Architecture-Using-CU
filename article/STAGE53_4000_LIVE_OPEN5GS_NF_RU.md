@@ -50,19 +50,18 @@ Evidence artifact:
 
 ## Stage53B — 1000 одновременно live NF
 
-Основной multi-worker run: 40718981055.
+Авторитетный повторный run: 40724764246.
 
 Архитектура:
 - 4 GitHub-hosted runner jobs;
 - 250 live NSSF на worker;
 - локальный NRF + SCP на каждом worker;
-- 300 s hold после полной проверки worker.
+- расширенное hold-окно для прямой проверки одновременности;
+- исправленный aggregate verifier.
 
-Все четыре worker завершились success. Из-за синтаксической ошибки только в исходном aggregation script финальный aggregate-job этого run упал уже после успешного получения всех четырёх worker artifacts. Поэтому результат повторно проверен отдельным audit-job без перезапуска NF.
+Все четыре worker и aggregate-job завершились success.
 
-Авторитетный audit run: 40720750770.
-
-Результат аудита:
+Результат:
 - workers: 4;
 - live processes: 1000/1000;
 - runtime witnesses: 1000/1000;
@@ -70,19 +69,22 @@ Evidence artifact:
 - direct SBI reachable: 1000/1000;
 - глобально уникальные UUID: 1000/1000;
 - SHA-256 Open5GS binary одинаков на всех workers;
-- реальное одновременное окно всех 1000 NF: 215.074 s;
-- registration convergence median: 13.625 s;
-- max: 14.365 s;
+- реальное одновременное окно всех 1000 NF: 134.245 s;
+- registration convergence median: 13.289 s;
+- max: 13.464 s;
+- aggregate cgroup memory.current: 7,539,073,024 bytes;
 - 4 unique runner names;
 - 4 unique boot-id hashes;
-- 2 unique hostnames и 2 unique machine-id hashes.
+- 1 unique hostname и 1 unique machine-id hash.
 
 Последние два значения нельзя использовать как доказательство четырёх разных физических серверов: GitHub-hosted images могут повторно использовать шаблонные machine-id/hostname свойства. Наличие четырёх различных runner names и boot-id подтверждает четыре отдельных job/VM execution contexts, но не bare-metal separation.
 
-Audit artifact:
-- `stage53b-1000-live-nf-audit-evidence`;
-- ID 12830781465;
-- SHA-256 `a9dd794c3d1645e1ef36de117a09d1e4d41868894aefda9dca450bba2e8c91b0`.
+Aggregate artifact:
+- `stage53b-1000-live-nf-aggregate-evidence`;
+- ID 12832763058;
+- SHA-256 `c0ef90b42f785a97fe1d6c0dd7f9295dfd7b362dcf0b51283fc8288038c5ae0d`.
+
+Предыдущий run с успешными worker jobs, но синтаксической ошибкой агрегатора, и отдельный audit его artifacts сохранены только как диагностическая история; для итоговых результатов Stage53B используется полный повторный run 40724764246.
 
 ## Stage53C — 4000 одновременно live NF
 
