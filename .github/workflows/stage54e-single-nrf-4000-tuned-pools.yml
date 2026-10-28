@@ -28,24 +28,15 @@ jobs:
           s=s.replace("1<=args.count<=2000","1<=args.count<=4000")
           s=s.replace("count must be 1..2000 for Stage54 single-NRF scale",
                       "count must be 1..4000 for Stage54E")
-          old='''global:
-  max:
-    peer: {peer_limit}
-nrf:
-'''
-          new='''global:
-  max:
-    ue: 4096
-    peer: {peer_limit}
-nrf:
-'''
+          old = "global:\\n  max:\\n    peer: {peer_limit}\\nnrf:\\n"
+          new = "global:\\n  max:\\n    ue: 4096\\n    peer: {peer_limit}\\nnrf:\\n"
           if old not in s:
               raise SystemExit("NRF global.max patch marker not found")
           s=s.replace(old,new,1)
           p.write_text(s)
           compile(s,"stage54e_4000.py","exec")
           PY
-          grep -A7 -n 'def nrf_config' stage54e_4000.py
+          grep -A8 -n 'def nrf_config' stage54e_4000.py
 
       - name: Add 8 GiB swap
         run: |
