@@ -1,0 +1,34 @@
+name: Stage45 randomized group partition and negative controls
+on:
+  push:
+    branches:
+      - experiment/stage45-randomized-partition-audit
+    paths:
+      - "stage45/**"
+      - ".github/workflows/stage45-partition-audit.yml"
+  pull_request:
+    paths:
+      - "stage45/**"
+      - ".github/workflows/stage45-partition-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  randomized-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run randomized partition equivalence and fail-closed controls
+        run: |
+          set -euo pipefail
+          python3 stage45/stage45_partition_audit.py --output stage45_report.json
+          python3 -m json.tool stage45_report.json >/dev/null
+          echo "### Stage45 deterministic synthetic audit" >> "$GITHUB_STEP_SUMMARY"
+          echo "48 paired comparisons; 6 negative controls (see artifact)." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage45-partition-evidence
+          path: stage45_report.json
+          retention-days: 90
