@@ -1,0 +1,96 @@
+name: Stage51 independent evidence roots
+on:
+  push:
+    branches: [experiment/stage51-independent-evidence-roots]
+    paths: ["stage51/**",".github/workflows/stage51-independent-evidence-roots.yml"]
+  pull_request:
+    paths: ["stage51/**",".github/workflows/stage51-independent-evidence-roots.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  lifecycle-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover immutable Stage42 evidence and prepare live seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src data anchors
+          gh run download 39148421353 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU -n stage42-eighty-live-restarts-evidence -D src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed --artifact-dir src --seed data/stage44_seed.json
+          python3 stage51/stage51_independent_roots.py make-manifests --seed data/stage44_seed.json --outdir anchors
+      - name: Generate ephemeral Ed25519 lifecycle authority and sign both honest and compromised-authority fixtures
+        run: |
+          set -euo pipefail
+          openssl genpkey -algorithm ED25519 -out lifecycle-private.pem
+          openssl pkey -in lifecycle-private.pem -pubout -out anchors/lifecycle-public.pem
+          openssl pkeyutl -sign -inkey lifecycle-private.pem -rawin -in anchors/anchors_honest.json -out anchors/anchors_honest.sig
+          openssl pkeyutl -sign -inkey lifecycle-private.pem -rawin -in anchors/anchors_compromised.json -out anchors/anchors_compromised.sig
+          openssl pkeyutl -verify -pubin -inkey anchors/lifecycle-public.pem -rawin -in anchors/anchors_honest.json -sigfile anchors/anchors_honest.sig
+          openssl pkeyutl -verify -pubin -inkey anchors/lifecycle-public.pem -rawin -in anchors/anchors_compromised.json -sigfile anchors/anchors_compromised.sig
+          rm -f lifecycle-private.pem
+          sha256sum anchors/* > anchors/anchor_sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage51-lifecycle-anchor-evidence
+          path: anchors/
+          retention-days: 90
+
+  three-root-evaluation:
+    needs: lifecycle-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      STAGE51_RENDER_URL: https://stage47-render-verifier-fixed.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage51-lifecycle-anchor-evidence
+          path: anchors
+      - name: Recover immutable Stage42 evidence and prepare the same 12-live-profile seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src data out
+          gh run download 39148421353 -R verge88/Adaptive-Hierarchical-Security-Monitoring-of-5G-Service-Based-Architecture-Using-CU -n stage42-eighty-live-restarts-evidence -D src
+          python3 stage44/stage44_multinode_tcp.py prepare-seed --artifact-dir src --seed data/stage44_seed.json
+      - name: Wait for pinned Render Stage51 runtime oracle
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,time,urllib.request
+          u="https://stage47-render-verifier-fixed.onrender.com/health"
+          last=None
+          for _ in range(40):
+              try:
+                  with urllib.request.urlopen(u,timeout=20) as r:x=json.loads(r.read())
+                  print(json.dumps(x,indent=2))
+                  assert x["host"]["provider"]=="render"
+                  assert x.get("stage51_identity_map_sha256")
+                  break
+              except Exception as e:
+                  last=e;time.sleep(3)
+          else: raise SystemExit("Stage51 Render oracle unavailable: "+repr(last))
+          PY
+      - name: Run single-root, double-root and all-root compromise matrix
+        run: |
+          set -euo pipefail
+          python3 stage51/stage51_independent_roots.py run \
+            --seed data/stage44_seed.json --anchors anchors \
+            --render-url "$STAGE51_RENDER_URL" --out out/stage51_report.json | tee out/stage51_summary.txt
+          python3 -m json.tool out/stage51_report.json >/dev/null
+          (cd out && sha256sum stage51_report.json stage51_summary.txt > stage51_sha256.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage51-independent-evidence-roots
+          path: out/
+          retention-days: 90
