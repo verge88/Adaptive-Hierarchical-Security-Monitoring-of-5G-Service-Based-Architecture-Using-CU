@@ -32,7 +32,7 @@ STAGE51_IDENTITIES={
  "smf1":{"nf_type":"SMF","endpoint":"127.0.0.21","uuid":"683521de-cb17-41f1-be57-313b7449e9f3"},
  "pcf1":{"nf_type":"PCF","endpoint":"127.0.0.22","uuid":"6843dad0-cb17-41f1-843e-6b58e972449c"}
 }
-STAGE51_MAP_SHA256=hashlib.sha256(json.dumps(STAGE51_IDENTITIES,sort_keys=True,separators=(\",\",\":\"),ensure_ascii=False).encode()).hexdigest()
+STAGE51_MAP_SHA256=hashlib.sha256(json.dumps(STAGE51_IDENTITIES,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
 
 def stage51_false_uuid(slot,trial):
     return str(uuid.uuid5(uuid.NAMESPACE_URL,f"stage51/false/{slot}/{int(trial)}"))
