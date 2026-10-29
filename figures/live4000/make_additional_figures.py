@@ -85,15 +85,10 @@ def setup_style():
     })
 
 
-def base(title: str, subtitle: str, footer: str, height: float = 7.1):
+def base(height: float = 6.45):
+    """Compact plotting region; captions belong in the article, not inside figures."""
     fig = plt.figure(figsize=(12.8, height), facecolor="white")
-    fig.text(0.045, 0.952, title, ha="left", va="top",
-             fontsize=18, fontweight="bold", color=TEXT)
-    fig.text(0.045, 0.897, subtitle, ha="left", va="top",
-             fontsize=10.5, color=MUTED)
-    fig.text(0.045, 0.039, footer, ha="left", va="bottom",
-             fontsize=9.6, color=MUTED)
-    ax = fig.add_axes([0.374, 0.145, 0.575, 0.680])
+    ax = fig.add_axes([0.374, 0.19, 0.575, 0.735])
     ax.set_axisbelow(True)
     ax.grid(axis="x", color=GRID, linewidth=0.9)
     ax.tick_params(axis="both", colors=MUTED, labelsize=10, length=0, pad=8)
@@ -113,12 +108,7 @@ def save(fig, dest: Path, name: str):
 
 
 def plot_scenarios(grouped, dest):
-    fig, ax = base(
-        "Обнаружение нарушений по девяти сценариям",
-        "Сопоставление количества изменённых позиций и диагностических пар",
-        "Примечание. Значения приведены на один вариант размещения изменений; "
-        "три варианта дали одинаковые количества.",
-    )
+    fig, ax = base()
     labels = [x[1] for x in SCENARIOS]
     targets = [grouped[name][0]["injected_slots"] for name, _ in SCENARIOS]
     pairs = [grouped[name][0]["diagnostic_pairs"] for name, _ in SCENARIOS]
@@ -139,18 +129,11 @@ def plot_scenarios(grouped, dest):
     ax.set_xlabel("Количество, ед.", color=MUTED, labelpad=11)
     ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.11), ncol=2,
               frameon=False, fontsize=10, labelcolor=TEXT)
-    fig.text(0.950, 0.945, "27/27 — равенство вердиктов", ha="right",
-             va="top", fontsize=11.7, color=TEAL, fontweight="bold")
     save(fig, dest, "fig_03_attack_scenarios")
 
 
 def plot_distribution(grouped, dest):
-    fig, ax = base(
-        "Адаптивный контроль: 27 испытаний",
-        "Углублённые проверки по сценариям и трём детерминированным размещениям",
-        "Важно. Три размещения не являются независимыми запусками сети. "
-        "Показана вариация внутри исследованной матрицы.",
-    )
+    fig, ax = base()
     labels = [x[1] for x in SCENARIOS]
     positions = list(range(len(labels) - 1, -1, -1))
     offsets = (-0.16, 0.0, 0.16)
@@ -178,19 +161,11 @@ def plot_distribution(grouped, dest):
                   color=MUTED, labelpad=11)
     ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.025), ncol=4,
               frameon=False, fontsize=9.1, labelcolor=TEXT)
-    fig.text(0.949, 0.947, "Среднее: 264,74", ha="right",
-             va="top", fontsize=12.2, color=TEAL, fontweight="bold")
     save(fig, dest, "fig_04_adaptive_27_cases")
 
 
 def plot_live_nfs(dest):
-    fig, ax = base(
-        "Подтверждение 4000 работающих NSSF",
-        "Четыре направления проверки одного массива Open5GS 2.7.6",
-        "Примечание. Сверка UUID выполнена для NRF и нативных свидетельств; "
-        "аппаратная аттестация не проводилась.",
-        height=6.2,
-    )
+    fig, ax = base(height=5.6)
     labels = [
         "Действующие процессы NSSF",
         "Уникальные UUID свидетельств",
@@ -202,7 +177,7 @@ def plot_live_nfs(dest):
     # live_processes=4000, unique_witness_uuids=4000,
     # nrf_individually_verified_profiles=4000, direct_sbi_reachable=4000.
     assert len(values) == 4 and all(x == N for x in values)
-    ax.set_position([0.344, 0.235, 0.603, 0.5])
+    ax.set_position([0.344, 0.205, 0.603, 0.695])
     positions = [3, 2, 1, 0]
     ax.barh(positions, [100] * 4, height=0.48, color=TEAL, zorder=3)
     ax.set_yticks(positions, labels, fontsize=11, color=TEXT)
@@ -213,9 +188,6 @@ def plot_live_nfs(dest):
     for p in positions:
         ax.text(101.5, p, "4000/4000", va="center", ha="left",
                 fontsize=11, color=TEXT, fontweight="bold")
-    fig.text(0.045, 0.129,
-             "Совпадение множеств UUID процессов и регистрационных профилей: подтверждено.",
-             fontsize=10.6, ha="left", color=TEAL, fontweight="bold")
     save(fig, dest, "fig_05_live4000_validation")
 
 
