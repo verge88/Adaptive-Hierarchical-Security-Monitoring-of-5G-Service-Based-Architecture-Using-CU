@@ -1,0 +1,47 @@
+name: Publication figures — live 4000 NSSF
+
+on:
+  push:
+    branches:
+      - article/live4000-figures-20261029
+    paths:
+      - ".github/workflows/article-live4000-figures.yml"
+      - "figures/live4000/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render-figures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Matplotlib
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install matplotlib==3.10.6
+      - name: Generate publication figures
+        run: python figures/live4000/make_figures.py --output-dir figures/live4000/out
+      - name: Validate exports
+        run: |
+          test -s figures/live4000/out/fig_01_deep_checks.png
+          test -s figures/live4000/out/fig_01_deep_checks.svg
+          test -s figures/live4000/out/fig_02_coordinator_data.png
+          test -s figures/live4000/out/fig_02_coordinator_data.svg
+          file figures/live4000/out/*
+          cd figures/live4000/out
+          sha256sum *.png *.svg > SHA256SUMS.txt
+      - name: Upload PNG and SVG artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: article-figures-live4000
+          path: figures/live4000/out/
+          if-no-files-found: error
+          retention-days: 90
