@@ -55,15 +55,10 @@ def fmt_ru(value: float, digits: int = 2) -> str:
     return s.replace(",", " ").replace(".", ",")
 
 
-def layout(title: str, subtitle: str, improvement: str):
-    fig = plt.figure(figsize=(10.8, 5.0), facecolor=BACKGROUND)
-    ax = fig.add_axes([0.355, 0.245, 0.575, 0.555])
-    fig.text(0.045, 0.93, title, fontsize=18, fontweight="bold",
-             color=TEXT, ha="left", va="top")
-    fig.text(0.045, 0.855, subtitle, fontsize=10.7,
-             color=MUTED, ha="left", va="top")
-    fig.text(0.935, 0.927, improvement, fontsize=15.3, fontweight="bold",
-             color=COLORS[2], ha="right", va="top")
+def layout():
+    """Compact plot without a heading or explanatory footnote."""
+    fig = plt.figure(figsize=(10.8, 4.25), facecolor=BACKGROUND)
+    ax = fig.add_axes([0.355, 0.20, 0.575, 0.71])
     ax.set_facecolor(BACKGROUND)
     ax.set_axisbelow(True)
     ax.grid(axis="x", color=GRID, linewidth=0.9)
@@ -89,14 +84,7 @@ def save(fig, dest: Path, stem: str):
 
 
 def plot_deep_checks(data: dict, dest: Path) -> None:
-    base = data["centralized"]["deep_checks"]
-    adaptive = data["adaptive_hierarchical"]["deep_checks"]
-    gain = (1 - adaptive / base) * 100
-    fig, ax = layout(
-        "Количество углублённых проверок",
-        "Средние значения по 27 детерминированным испытаниям · 4000 NSSF",
-        f"−{fmt_ru(gain)} %",
-    )
+    fig, ax = layout()
     vals = [data[m]["deep_checks"] for m in METHODS]
     bars = ax.barh([2, 1, 0], vals, height=0.53,
                    color=COLORS, edgecolor="none")
@@ -112,24 +100,11 @@ def plot_deep_checks(data: dict, dest: Path) -> None:
     ))
     ax.set_xlabel("Углублённые проверки на цикл, ед.", fontsize=11,
                   color=MUTED, labelpad=12)
-    fig.text(0.045, 0.085,
-             "Примечание. Все 4000 профилей проходили предварительную проверку.",
-             fontsize=10.3, color=MUTED, ha="left")
-    fig.text(0.045, 0.045,
-             "Экономия относится только к углублённым операциям, а не ко времени выполнения.",
-             fontsize=10.3, color=MUTED, ha="left")
     save(fig, dest, "fig_01_deep_checks")
 
 
 def plot_bytes(data: dict, dest: Path) -> None:
-    base = data["centralized"]["coordinator_bytes"]
-    adaptive = data["adaptive_hierarchical"]["coordinator_bytes"]
-    gain = (1 - adaptive / base) * 100
-    fig, ax = layout(
-        "Данные, передаваемые координатору",
-        "Средние значения по 27 испытаниям · объём сериализованных сведений",
-        f"−{fmt_ru(gain)} %",
-    )
+    fig, ax = layout()
     vals = [data[m]["coordinator_bytes"] for m in METHODS]
     bars = ax.barh([2, 1, 0], [x / 1_000_000 for x in vals],
                    height=0.53, color=COLORS, edgecolor="none")
@@ -145,12 +120,6 @@ def plot_bytes(data: dict, dest: Path) -> None:
     ))
     ax.set_xlabel("Сериализованные данные, МБ (10⁶ байт)", fontsize=11,
                   color=MUTED, labelpad=12)
-    fig.text(0.045, 0.085,
-             "Примечание. Измерен размер данных на входе координатора.",
-             fontsize=10.3, color=MUTED, ha="left")
-    fig.text(0.045, 0.045,
-             "Полный сетевой трафик, процессорное время и задержка обнаружения не измерялись.",
-             fontsize=10.3, color=MUTED, ha="left")
     save(fig, dest, "fig_02_coordinator_data")
 
 
