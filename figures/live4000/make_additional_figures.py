@@ -176,7 +176,7 @@ def plot_distribution(grouped, dest):
     ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.set_xlabel("Углублённые проверки на цикл, ед. (показан диапазон 245–274)",
                   color=MUTED, labelpad=11)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.115), ncol=4,
+    ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.025), ncol=4,
               frameon=False, fontsize=9.1, labelcolor=TEXT)
     fig.text(0.949, 0.947, "Среднее: 264,74", ha="right",
              va="top", fontsize=12.2, color=TEAL, fontweight="bold")
