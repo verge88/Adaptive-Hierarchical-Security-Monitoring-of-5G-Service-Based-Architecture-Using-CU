@@ -1,0 +1,141 @@
+name: Stage56 final live 4000 NF integrity A/B
+
+on:
+  push:
+    branches: [experiment/stage56-final-live-4000-integrity]
+    paths:
+      - "stage56/**"
+      - ".github/workflows/stage56-final-live-4000-integrity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-live-4000:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and prepare single-NRF 4000 driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile stage56/final_4000_integrity.py
+          cp stage54/stage54_single_nrf.py stage56/stage54e_driver.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("stage56/stage54e_driver.py")
+          s=p.read_text()
+          s=s.replace("peer_limit=max(4096,args.count+512)",
+                      "peer_limit=max(8192,args.count+2048)")
+          old_nrf="""global:
+            max:
+              peer: {peer_limit}
+          nrf:
+          """
+          new_nrf="""global:
+            max:
+              ue: 8192
+              peer: {peer_limit}
+          nrf:
+          """
+          old_scp="""global:
+            max:
+              peer: {peer_limit}
+          scp:
+          """
+          new_scp="""global:
+            max:
+              ue: 8192
+              peer: {peer_limit}
+          scp:
+          """
+          if old_nrf not in s or old_scp not in s:
+              raise SystemExit("Open5GS pool patch anchors missing")
+          s=s.replace(old_nrf,new_nrf,1).replace(old_scp,new_scp,1)
+          p.write_text(s)
+          compile(s,"stage56/stage54e_driver.py","exec")
+          PY
+          mkdir -p stage56_output
+          sha256sum stage56/final_4000_integrity.py stage56/stage54e_driver.py > stage56_output/source_sha256.txt
+
+      - name: Reserve 8 GiB additional swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          free -b > stage56_output/host_memory_before.txt
+          sudo fallocate -l 8G /mnt/stage56.swap
+          sudo chmod 600 /mnt/stage56.swap
+          sudo mkswap /mnt/stage56.swap
+          sudo swapon /mnt/stage56.swap
+          cat /proc/swaps > stage56_output/swap_after_add.txt
+
+      - name: Build Open5GS v2.7.6
+        shell: bash
+        run: docker build -f stage53/Dockerfile -t stage56-open5gs .
+
+      - name: Run final experiment with 4000 genuine NF
+        shell: bash
+        run: |
+          set -uo pipefail
+          NAME=stage56-final-live
+          OUT=stage56_output
+          docker run --name "$NAME" --network host --pids-limit=-1 \
+            -v "$PWD/$OUT:/out" \
+            -v "$PWD/stage56/final_4000_integrity.py:/opt/stage56.py:ro" \
+            -v "$PWD/stage56/stage54e_driver.py:/opt/stage54e_driver.py:ro" \
+            stage56-open5gs python3 /opt/stage56.py \
+              --count 4000 --worker 0 \
+              --hold-seconds 60 --converge-timeout 1800 \
+              --batch 25 --batch-pause 0.05 --output /out
+          RC=$?
+          echo "$RC" > "$OUT/container_exit_code.txt"
+          if [ "$RC" -eq 0 ]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path("stage56_output/stage56_result.json").read_text())
+          b=json.loads(Path("stage56_output/result.json").read_text())
+          assert a["real_open5gs_nf_count"]==4000 and a["all_checks_passed"]
+          assert b["nrf_individually_verified_profiles"]==4000 and b["all_checks_passed"]
+          summary = {
+            "method_report":a["schema"],
+            "live_nf":b["live_processes"],
+            "verified_nfm":b["nrf_individually_verified_profiles"],
+            "all_method_checks_passed":a["all_checks_passed"],
+            "all_live_checks_passed":b["all_checks_passed"],
+            "mean_deep_checks":a["mean_deep_checks"],
+            "mean_coordinator_bytes":a["mean_coordinator_bytes"],
+            "reduction_percent":a["reduction_percent"],
+          }
+          Path("stage56_output/final_summary.json").write_text(
+            json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(summary,indent=2))
+          PY
+            (cd "$OUT" && sha256sum stage56_result.json result.json final_summary.json uuid_hashes.txt > evidence_sha256.txt)
+            cat "$OUT/final_summary.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$RC"
+
+      - name: Preserve failure diagnostics and release swap
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p stage56_output
+          docker inspect stage56-final-live --format '{{json .State}}' > stage56_output/container_state.json 2>&1
+          docker logs stage56-final-live --tail 1200 > stage56_output/container_tail.log 2>&1
+          free -b > stage56_output/host_memory_after.txt
+          cat /proc/swaps > stage56_output/swap_before_cleanup.txt
+          docker rm -f stage56-final-live
+          sudo swapoff /mnt/stage56.swap
+          sudo rm -f /mnt/stage56.swap
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage56-final-live-4000-integrity-evidence
+          path: stage56_output/
+          retention-days: 90
