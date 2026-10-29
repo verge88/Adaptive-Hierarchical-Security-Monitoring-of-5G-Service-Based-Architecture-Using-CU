@@ -1,0 +1,4 @@
+method,deep_checks,coordinator_bytes
+centralized,4000,2577839.89
+fixed_hierarchical,4000,296362.37
+adaptive_hierarchical,264.74,296366.37
