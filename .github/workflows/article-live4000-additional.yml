@@ -1,0 +1,46 @@
+name: Additional scientific figures — 4000 live NSSF
+
+on:
+  push:
+    branches:
+      - article/live4000-figures-20261029
+    paths:
+      - ".github/workflows/article-live4000-additional.yml"
+      - "figures/live4000/make_additional_figures.py"
+      - "figures/live4000/stage56_27_cases.csv"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  additional-figures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Matplotlib
+        run: python -m pip install matplotlib==3.10.6
+      - name: Render three publication-quality figures
+        run: python figures/live4000/make_additional_figures.py --output-dir figures/live4000/out_additional
+      - name: Verify exported PNG and SVG
+        run: |
+          set -eu
+          cd figures/live4000/out_additional
+          for id in 03_attack_scenarios 04_adaptive_27_cases 05_live4000_validation; do
+            test -s "fig_${id}.png"
+            test -s "fig_${id}.svg"
+            grep -q '<svg' "fig_${id}.svg"
+          done
+          sha256sum *.png *.svg > SHA256SUMS.txt
+          file *.png *.svg
+      - name: Upload publication files
+        uses: actions/upload-artifact@v4
+        with:
+          name: article-figures-additional-live4000
+          path: figures/live4000/out_additional/
+          retention-days: 90
+          if-no-files-found: error
